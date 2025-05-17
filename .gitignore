@@ -1,0 +1,44 @@
+# === Python bytecode ===
+__pycache__/
+*.py[cod]
+
+# === Virtual environment ===
+env/
+.venv/
+ENV/
+
+# === Env / secret config ===
+.env
+.env.*
+env/  # lo punya folder 'env', jaga-jaga kalau itu virtualenv
+
+# === Logs & dumps ===
+*.log
+*.sql
+*.dump
+*.bak
+
+# === Database files (if accidentally saved locally) ===
+*.db
+*.sqlite3
+
+# === VSCode / PyCharm / editor stuff ===
+.vscode/
+.idea/
+
+# === Testing / coverage ===
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === OS-specific files ===
+.DS_Store
+Thumbs.db
+
+# === Alembic (if used) ===
+migrations/
+alembic.ini
+
+# === Others ===
+# test_db.py  # karena ini file testing, opsional mau di-ignore atau enggak
+# ors_directions_error.json  # kemungkinan ini file hasil error testing? Kalau nggak perlu disave, better di-ignore
