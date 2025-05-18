@@ -332,7 +332,7 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    cluster_pk_map = {c.cluster_id: c.id for c in clusters if c.cluster_id not in cluster_pk_map}
+    cluster_pk_map = {c.cluster_id: c.id for c in clusters}
 
     cluster_pk_list = list(cluster_pk_map.values())
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
