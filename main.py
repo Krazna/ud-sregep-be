@@ -10,6 +10,8 @@ from distance import distance_router
 from daily_pengepul import router as daily_pengepul_router
 from database import Base, engine
 
+import os
+
 import jwt
 
 SECRET_KEY = "rahasia123"
@@ -77,3 +79,13 @@ api_v1_router.include_router(distance_router, prefix="/distance_matrix", tags=["
 api_v1_router.include_router(daily_pengepul_router, prefix="/pengepul", tags=["Daily Pengepul"])
 
 app.include_router(api_v1_router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000)),
+        reload=False
+    )
