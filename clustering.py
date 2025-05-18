@@ -336,11 +336,10 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
     # Buat mapping cluster_id ke Cluster.id (PK)
     cluster_pk_map = {}
     for c in clusters:
-        # Ini anggap cluster_id bisa punya multiple record, jadi ambil salah satu Cluster.id untuk tiap cluster_id
         if c.cluster_id not in cluster_pk_map:
             cluster_pk_map[c.cluster_id] = c.id
 
-    # Hapus ClusterRoute hanya untuk cluster_id yang ada di tanggal ini (gunakan PK Cluster.id)
+    # Hapus ClusterRoute hanya untuk cluster_id yang ada di tanggal ini
     cluster_pk_list = list(cluster_pk_map.values())
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
@@ -350,19 +349,18 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
     for cl in clusters:
         cluster_dict[cl.cluster_id].append(cl)
 
-    for cluster_id in sorted(cluster_dict.keys()):  # ✅ Pastikan urut cluster_id
+    for cluster_id in sorted(cluster_dict.keys()):
         cluster_items = cluster_dict[cluster_id]
         route_list = []
         vehicle_id = cluster_items[0].vehicle_id
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
-
-        # Ambil Cluster.id yang sesuai cluster_id ini (PK)
         cluster_pk = cluster_pk_map[cluster_id]
 
         lokasi_list = []
         for cl in cluster_items:
             lokasi_list.append({
-                "id": cl.daily_pengepul_id,
+                "cluster_entry_id": cl.id,  # Gunakan ID unik dari tabel Cluster
+                "daily_pengepul_id": cl.daily_pengepul_id,
                 "nama_pengepul": cl.nama_pengepul,
                 "alamat": cl.alamat,
                 "latitude": float(cl.latitude),
@@ -417,22 +415,22 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
         # Simpan ClusterRoute dan update Location.sudah_diambil
         for idx, loc in enumerate(ordered_locations):
-            location_entry = db.query(Location).filter(Location.id == loc["id"]).first()
+            location_entry = db.query(Location).filter(Location.id == loc["daily_pengepul_id"]).first()
             if not location_entry:
-                print(f"ERROR: Location ID {loc['id']} gak ketemu, skip insert cluster_route")
+                print(f"ERROR: Location ID {loc['daily_pengepul_id']} gak ketemu, skip insert cluster_route")
                 continue
 
-            daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["id"]).first()
+            daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["daily_pengepul_id"]).first()
             if not daily_pengepul_entry:
-                print(f"ERROR: DailyPengepul ID {loc['id']} gak ketemu, skip insert cluster_route")
+                print(f"ERROR: DailyPengepul ID {loc['daily_pengepul_id']} gak ketemu, skip insert cluster_route")
                 continue
 
             db.add(ClusterRoute(
-                cluster_id=cluster_pk,  # PENTING: pake PK Cluster.id, bukan cluster_id biasa
+                cluster_id=cluster_pk,
                 vehicle_id=vehicle_id,
                 order_no=idx + 1,
-                daily_pengepul_id=loc["id"],
-                location_id=loc["id"],
+                daily_pengepul_id=loc["daily_pengepul_id"],
+                location_id=loc["daily_pengepul_id"],
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 waktu_tempuh=total_waktu_list[idx],
@@ -444,12 +442,11 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
             ))
 
             location_entry.sudah_diambil = True
-
             total_nilai_angkut += loc["nilai_diangkut"]
 
             route_list.append({
                 "order_no": idx + 1,
-                "daily_pengepul_id": loc["id"],
+                "daily_pengepul_id": loc["daily_pengepul_id"],
                 "nama_pengepul": loc["nama_pengepul"],
                 "nama_kendaraan": vehicle.nama_kendaraan if vehicle else "",
                 "total_waktu": format_waktu(total_waktu_list[idx] / 3600),
