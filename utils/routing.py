@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 # Load ENV
 load_dotenv()
-ORS_API_KEY = os.getenv("ORS_API_KEY")
+ORS_API_KEY = "5b3ce3597851110001cf62480e7559e09dc140e9bfd9a773f454500a"
 
 # Logger setup
 logger = logging.getLogger("routing")
