@@ -348,6 +348,7 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
         lokasi_list = []
         for cl in cluster_items:
+            daily_pengepul = db.query(DailyPengepul).filter(DailyPengepul.id == cl.daily_pengepul_id).first()
             lokasi_list.append({
                 "id": cl.daily_pengepul_id,
                 "nama_pengepul": cl.nama_pengepul,
@@ -357,7 +358,11 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_ekspektasi_awal": float(cl.nilai_ekspektasi_awal),
                 "nilai_ekspektasi_akhir": float(cl.nilai_ekspektasi_akhir),
                 "nilai_diangkut": float(cl.nilai_diangkut),
+                "sudut_polar": daily_pengepul.sudut_polar if daily_pengepul else 0
             })
+
+        # Urutkan berdasarkan sudut polar terbesar ke terkecil
+        lokasi_list = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
         ordered_locations = nearest_neighbor(lokasi_list)
 
@@ -409,6 +414,7 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 vehicle_id=vehicle_id,
                 order_no=idx + 1,
                 daily_pengepul_id=loc["id"],
+                location_id=loc["id"],
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 waktu_tempuh=total_waktu_list[idx],
@@ -419,7 +425,6 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 tanggal_cluster=tanggal
             ))
 
-            # ✅ Update Location.sudah_diambil
             location_entry = db.query(Location).filter(Location.id == loc["id"]).first()
             if location_entry:
                 location_entry.sudah_diambil = True
@@ -458,7 +463,7 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
             "hasil_routes": hasil_routes
         }
     )
-    
+
 @cluster_router.get("/report-routes")
 def get_cluster_routes(
     start_date: Optional[str] = Query(None),
@@ -503,3 +508,4 @@ def get_cluster_routes(
         message=message,
         data=data
     )
+    
