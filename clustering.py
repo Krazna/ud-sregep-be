@@ -329,10 +329,16 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    cluster_ids_tanggal_ini = {c.cluster_id for c in clusters}
+    # Buat mapping cluster_id ke Cluster.id (PK)
+    cluster_pk_map = {}
+    for c in clusters:
+        # Ini anggap cluster_id bisa punya multiple record, jadi ambil salah satu Cluster.id untuk tiap cluster_id
+        if c.cluster_id not in cluster_pk_map:
+            cluster_pk_map[c.cluster_id] = c.id
 
-    # Hapus ClusterRoute hanya untuk cluster_id tanggal ini
-    db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_ids_tanggal_ini)).delete(synchronize_session=False)
+    # Hapus ClusterRoute hanya untuk cluster_id yang ada di tanggal ini (gunakan PK Cluster.id)
+    cluster_pk_list = list(cluster_pk_map.values())
+    db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
 
     hasil_routes = []
@@ -345,6 +351,9 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
         route_list = []
         vehicle_id = cluster_items[0].vehicle_id
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+
+        # Ambil Cluster.id yang sesuai cluster_id ini (PK)
+        cluster_pk = cluster_pk_map[cluster_id]
 
         lokasi_list = []
         for cl in cluster_items:
@@ -404,24 +413,22 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
         # Simpan ClusterRoute dan update Location.sudah_diambil
         for idx, loc in enumerate(ordered_locations):
-            # Validasi FK Location
             location_entry = db.query(Location).filter(Location.id == loc["id"]).first()
             if not location_entry:
                 print(f"ERROR: Location ID {loc['id']} gak ketemu, skip insert cluster_route")
                 continue
 
-            # Validasi FK DailyPengepul
             daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["id"]).first()
             if not daily_pengepul_entry:
                 print(f"ERROR: DailyPengepul ID {loc['id']} gak ketemu, skip insert cluster_route")
                 continue
 
             db.add(ClusterRoute(
-                cluster_id=cluster_id,
+                cluster_id=cluster_pk,  # PENTING: pake PK Cluster.id, bukan cluster_id biasa
                 vehicle_id=vehicle_id,
                 order_no=idx + 1,
                 daily_pengepul_id=loc["id"],
-                location_id=loc["id"],  # harus valid dan ada di Location
+                location_id=loc["id"],
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 waktu_tempuh=total_waktu_list[idx],
@@ -432,7 +439,6 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 tanggal_cluster=tanggal
             ))
 
-            # Update Location.sudah_diambil
             location_entry.sudah_diambil = True
 
             total_nilai_angkut += loc["nilai_diangkut"]
