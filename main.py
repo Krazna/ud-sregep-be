@@ -22,11 +22,15 @@ app = FastAPI(title="Logistics API")
 # 🆕 Tambahin CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4202"],  # alamat Angular lo
+    allow_origins=[
+        "http://localhost:4202",  # lokal (biar tetap bisa test local)
+        "https://ud-sregep-fe.vercel.app"  # domain frontend di Vercel
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # DB setup
 Base.metadata.create_all(bind=engine)
