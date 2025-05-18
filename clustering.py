@@ -348,7 +348,6 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
         lokasi_list = []
         for cl in cluster_items:
-            daily_pengepul = db.query(DailyPengepul).filter(DailyPengepul.id == cl.daily_pengepul_id).first()
             lokasi_list.append({
                 "id": cl.daily_pengepul_id,
                 "nama_pengepul": cl.nama_pengepul,
@@ -358,11 +357,7 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_ekspektasi_awal": float(cl.nilai_ekspektasi_awal),
                 "nilai_ekspektasi_akhir": float(cl.nilai_ekspektasi_akhir),
                 "nilai_diangkut": float(cl.nilai_diangkut),
-                "sudut_polar": daily_pengepul.sudut_polar if daily_pengepul else 0
             })
-
-        # Urutkan berdasarkan sudut polar terbesar ke terkecil
-        lokasi_list = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
         ordered_locations = nearest_neighbor(lokasi_list)
 
@@ -409,12 +404,24 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
         # Simpan ClusterRoute dan update Location.sudah_diambil
         for idx, loc in enumerate(ordered_locations):
+            # Validasi FK Location
+            location_entry = db.query(Location).filter(Location.id == loc["id"]).first()
+            if not location_entry:
+                print(f"ERROR: Location ID {loc['id']} gak ketemu, skip insert cluster_route")
+                continue
+
+            # Validasi FK DailyPengepul
+            daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["id"]).first()
+            if not daily_pengepul_entry:
+                print(f"ERROR: DailyPengepul ID {loc['id']} gak ketemu, skip insert cluster_route")
+                continue
+
             db.add(ClusterRoute(
                 cluster_id=cluster_id,
                 vehicle_id=vehicle_id,
                 order_no=idx + 1,
                 daily_pengepul_id=loc["id"],
-                location_id=loc["id"],
+                location_id=loc["id"],  # harus valid dan ada di Location
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 waktu_tempuh=total_waktu_list[idx],
@@ -425,9 +432,8 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 tanggal_cluster=tanggal
             ))
 
-            location_entry = db.query(Location).filter(Location.id == loc["id"]).first()
-            if location_entry:
-                location_entry.sudah_diambil = True
+            # Update Location.sudah_diambil
+            location_entry.sudah_diambil = True
 
             total_nilai_angkut += loc["nilai_diangkut"]
 
@@ -453,7 +459,12 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
             "total_nilai_diangkut": total_nilai_angkut
         })
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"DB Commit Error: {e}")
+        return standard_response(message=f"DB Commit Error: {e}", status_code=500)
 
     return standard_response(
         message="Routes berhasil di-generate!",
