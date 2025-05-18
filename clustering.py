@@ -1,3 +1,4 @@
+from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from models import DailyPengepul, Location, Vehicle, Cluster, ClusterRoute, TimeDistanceMatrix
@@ -184,11 +185,15 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
     return hasil_cluster, []
 
 
+@lru_cache(maxsize=1024)
+def cached_ors_request(origin: tuple, dest: tuple) -> float:
+    """Cached ORS request untuk jarak (km)"""
+    _, dist = ors_directions_request(origin, dest)
+    return dist or float("inf")
+
 def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
-    """Buat distance matrix berbasis ORS dengan key: 'from_id:to_id' -> jarak (km)"""
     coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
-    coords.insert(0, (DEPOT_LON, DEPOT_LAT))  # tambahkan depot di awal
-    precompute_matrix(coords)
+    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
 
     id_map = ["DEPOT"] + [str(loc["id"]) for loc in locations]
     matrix = {}
@@ -200,13 +205,12 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
             key = f"{id_map[i]}:{id_map[j]}"
             origin = coords[i]
             dest = coords[j]
-            _, dist = ors_directions_request(origin, dest)
-            matrix[key] = dist or float("inf")
+            dist = cached_ors_request(origin, dest)
+            matrix[key] = dist
 
     return matrix
 
 def nearest_neighbor(locations: List[dict]):
-    """Nearest Neighbor pake real-world distance dari ORS."""
     if not locations:
         return []
 
