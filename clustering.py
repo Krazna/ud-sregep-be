@@ -38,6 +38,7 @@ MAX_CLUSTER_PER_DAY = 3
 
 def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db: Session):
     hasil_cluster = []
+    # Urutkan berdasarkan sudut polar menurun
     remaining_locations = sorted(locations[:], key=lambda l: l.sudut_polar, reverse=True)
 
     if not remaining_locations:
@@ -47,7 +48,7 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
     cluster_id_harian = 1
 
     while any(loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" for loc in remaining_locations):
-        while current_date.weekday() == 6:  # skip Minggu
+        while current_date.weekday() == 6:  # Skip hari Minggu
             current_date += timedelta(days=1)
 
         print(f"\n📆 Mulai clustering tanggal: {current_date}")
@@ -64,17 +65,18 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                 current_cluster = []
                 used_locations = []
 
-                for loc in remaining_locations:
-                    if (
-                        loc.nilai_ekspektasi_akhir <= 0 or
-                        loc.tanggal_cluster > current_date or
-                        loc.status == "Sudah di-cluster"
-                    ):
-                        continue
+                # Sort ulang berdasarkan sudut polar setiap loop kendaraan
+                sorted_locations = sorted(
+                    [loc for loc in remaining_locations if loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" and loc.tanggal_cluster <= current_date],
+                    key=lambda l: l.sudut_polar,
+                    reverse=True
+                )
 
+                for loc in sorted_locations:
                     if total_load >= kapasitas:
                         break
 
+                    # Hitung durasi dan jarak dari previous location atau depot
                     if prev_loc is None:
                         dur, dist = ors_directions_request((DEPOT_LON, DEPOT_LAT), (loc.longitude, loc.latitude))
                     else:
@@ -171,9 +173,9 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
 
             if not any_vehicle_used:
                 print("⚠️ Tidak ada kendaraan yang bisa digunakan hari ini.")
-                break  # biar nggak infinite loop
+                break
 
-        # Pindahkan sisa lokasi ke hari berikutnya
+        # Update tanggal_cluster ke hari berikutnya jika belum ter-cluster
         for loc in remaining_locations:
             if loc.nilai_ekspektasi_akhir > 0 and loc.tanggal_cluster <= current_date and loc.status != "Sudah di-cluster":
                 loc.tanggal_cluster = current_date + timedelta(days=1)
@@ -183,7 +185,6 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
         current_date += timedelta(days=1)
 
     return hasil_cluster, []
-
 
 @lru_cache(maxsize=1024)
 def cached_ors_request(origin: tuple, dest: tuple) -> float:
