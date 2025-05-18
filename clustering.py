@@ -195,7 +195,8 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
     coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
     coords.insert(0, (DEPOT_LON, DEPOT_LAT))
 
-    id_map = ["DEPOT"] + [str(loc["id"]) for loc in locations]
+    # Ambil ID pakai key yang pasti ada: 'daily_pengepul_id' (fallback ke 'id' kalau perlu)
+    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
     matrix = {}
 
     for i in range(len(coords)):
@@ -209,6 +210,7 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
             matrix[key] = dist
 
     return matrix
+
 
 def nearest_neighbor(locations: List[dict]):
     if not locations:
