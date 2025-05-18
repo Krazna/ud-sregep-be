@@ -108,7 +108,7 @@ class ClusterRoute(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    cluster_id = Column(Integer, ForeignKey("clusters.cluster_id", ondelete="CASCADE"), nullable=False)
+    cluster_id = Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id"), nullable=False)
     order_no = Column(Integer, nullable=False)
 
