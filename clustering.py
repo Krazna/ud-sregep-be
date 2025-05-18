@@ -365,6 +365,20 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_diangkut": float(cl.nilai_diangkut),
             })
 
+        # Ambil sudut_polar dari DB berdasarkan daily_pengepul_id
+        location_ids = [loc["daily_pengepul_id"] for loc in lokasi_list]
+        lokasi_sudut_map = {
+            loc.id: loc.sudut_polar
+            for loc in db.query(Location).filter(Location.id.in_(location_ids)).all()
+        }
+
+        # Tambahin sudut_polar ke lokasi_list
+        for loc in lokasi_list:
+            loc["sudut_polar"] = lokasi_sudut_map.get(loc["daily_pengepul_id"], 0)
+
+        # Sort lokasi_list berdasarkan sudut_polar DESC (besar ke kecil)
+        lokasi_list.sort(key=lambda x: x["sudut_polar"], reverse=True)
+
         try:
             ordered_locations = nearest_neighbor(lokasi_list)
         except Exception as e:
