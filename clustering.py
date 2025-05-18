@@ -195,7 +195,7 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
     coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
     coords.insert(0, (DEPOT_LON, DEPOT_LAT))
 
-    # Ambil ID pakai key yang pasti ada: 'daily_pengepul_id' (fallback ke 'id' kalau perlu)
+    # Ambil ID yang konsisten untuk key matrix
     id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
     matrix = {}
 
@@ -211,7 +211,6 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
 
     return matrix
 
-
 def nearest_neighbor(locations: List[dict]):
     if not locations:
         return []
@@ -224,10 +223,13 @@ def nearest_neighbor(locations: List[dict]):
     while unvisited:
         next_loc = min(
             unvisited,
-            key=lambda loc: distance_matrix.get(f"{current_id}:{loc['id']}", float("inf"))
+            key=lambda loc: distance_matrix.get(
+                f"{current_id}:{str(loc.get('daily_pengepul_id') or loc.get('id'))}",
+                float("inf")
+            )
         )
         route.append(next_loc)
-        current_id = str(next_loc["id"])
+        current_id = str(next_loc.get('daily_pengepul_id') or next_loc.get('id'))
         unvisited.remove(next_loc)
 
     return route
@@ -326,22 +328,12 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
 def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
     from collections import defaultdict
 
-    clusters = (
-        db.query(Cluster)
-        .filter(Cluster.tanggal_cluster == tanggal)
-        .all()
-    )
-
+    clusters = db.query(Cluster).filter(Cluster.tanggal_cluster == tanggal).all()
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    # Buat mapping cluster_id ke Cluster.id (PK)
-    cluster_pk_map = {}
-    for c in clusters:
-        if c.cluster_id not in cluster_pk_map:
-            cluster_pk_map[c.cluster_id] = c.id
+    cluster_pk_map = {c.cluster_id: c.id for c in clusters if c.cluster_id not in cluster_pk_map}
 
-    # Hapus ClusterRoute hanya untuk cluster_id yang ada di tanggal ini
     cluster_pk_list = list(cluster_pk_map.values())
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
@@ -361,7 +353,8 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
         lokasi_list = []
         for cl in cluster_items:
             lokasi_list.append({
-                "cluster_entry_id": cl.id,  # Gunakan ID unik dari tabel Cluster
+                "id": cl.daily_pengepul_id,  # Ini buat backup key di nearest_neighbor
+                "cluster_entry_id": cl.id,
                 "daily_pengepul_id": cl.daily_pengepul_id,
                 "nama_pengepul": cl.nama_pengepul,
                 "alamat": cl.alamat,
@@ -372,7 +365,15 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_diangkut": float(cl.nilai_diangkut),
             })
 
-        ordered_locations = nearest_neighbor(lokasi_list)
+        try:
+            ordered_locations = nearest_neighbor(lokasi_list)
+        except Exception as e:
+            print(f"ERROR saat proses nearest_neighbor di cluster {cluster_id}: {e}")
+            continue
+
+        if not ordered_locations:
+            print(f"WARNING: Cluster {cluster_id} kosong setelah urut lokasi")
+            continue
 
         total_waktu_list = []
         total_jarak_list = []
@@ -398,7 +399,6 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
             total_waktu_list.append(int(total_waktu))
             total_jarak_list.append(round(dist, 2))
 
-        # Pulang ke depot
         last_location = ordered_locations[-1]
         dur_back, dist_back = ors_directions_request(
             (last_location["longitude"], last_location["latitude"]),
@@ -415,16 +415,12 @@ def generate_routes(tanggal: date = Query(...), db: Session = Depends(get_db)):
         total_waktu_list.append(int((travel_back_time + LOAD_UNLOAD_TIME) * 3600))
         total_jarak_list.append(round(dist_back, 2))
 
-        # Simpan ClusterRoute dan update Location.sudah_diambil
         for idx, loc in enumerate(ordered_locations):
             location_entry = db.query(Location).filter(Location.id == loc["daily_pengepul_id"]).first()
-            if not location_entry:
-                print(f"ERROR: Location ID {loc['daily_pengepul_id']} gak ketemu, skip insert cluster_route")
-                continue
-
             daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["daily_pengepul_id"]).first()
-            if not daily_pengepul_entry:
-                print(f"ERROR: DailyPengepul ID {loc['daily_pengepul_id']} gak ketemu, skip insert cluster_route")
+
+            if not location_entry or not daily_pengepul_entry:
+                print(f"ERROR: Data daily_pengepul/location ID {loc['daily_pengepul_id']} gak ketemu, skip.")
                 continue
 
             db.add(ClusterRoute(
