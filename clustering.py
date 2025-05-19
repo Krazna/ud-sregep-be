@@ -372,7 +372,7 @@ def generate_routes(
             data=[
                 {
                     "cluster_id": r.cluster_id,
-                    "urutan": r.urutan,
+                    "order_no": r.order_no,
                     "daily_pengepul_id": r.daily_pengepul_id,
                     "nama_pengepul": r.nama_pengepul,
                     "alamat": r.alamat,
@@ -457,7 +457,7 @@ def generate_routes(
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 nilai_diangkut=loc["nilai_diangkut"],
-                urutan=i + 1,
+                order_no=i + 1,
                 durasi_dari_sebelumnya_menit=round(durasi, 2),
                 jarak_dari_sebelumnya_km=round(jarak, 2),
                 is_optimized=optimize
@@ -466,7 +466,7 @@ def generate_routes(
 
             hasil_routes.append({
                 "cluster_id": cluster_id,
-                "urutan": i + 1,
+                "order_no": i + 1,
                 "daily_pengepul_id": loc["daily_pengepul_id"],
                 "nama_pengepul": loc["nama_pengepul"],
                 "alamat": loc["alamat"],
