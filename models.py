@@ -128,6 +128,8 @@ class ClusterRoute(Base):
     nilai_diangkut = Column(Float, nullable=True)
 
     tanggal_cluster = Column(Date, default=date.today, nullable=False)
+    
+    is_optimized = Column(Boolean, default=False)
 
     # Relationships
     cluster = relationship("Cluster", back_populates="cluster_routes")
