@@ -377,8 +377,8 @@ def generate_routes(
                     "nama_pengepul": r.nama_pengepul,
                     "alamat": r.alamat,
                     "nilai_diangkut": r.nilai_diangkut,
-                    "jarak_dari_sebelumnya_km": r.jarak_dari_sebelumnya_km,
-                    "durasi_dari_sebelumnya_menit": r.durasi_dari_sebelumnya_menit,
+                    "jarak_dari_sebelumnya_km": r.jarak_tempuh_km,
+                    "durasi_dari_sebelumnya_menit": r.waktu_tempuh,
                 }
                 for r in existing_routes
             ]
@@ -410,19 +410,15 @@ def generate_routes(
         vehicle_id = cluster_items[0].vehicle_id
 
         lokasi_list = [{
-            "id": cl.daily_pengepul_id,
-            "cluster_entry_id": cl.id,
             "daily_pengepul_id": cl.daily_pengepul_id,
             "nama_pengepul": cl.nama_pengepul,
             "alamat": cl.alamat,
             "latitude": float(cl.latitude),
             "longitude": float(cl.longitude),
-            "nilai_ekspektasi_awal": float(cl.nilai_ekspektasi_awal),
-            "nilai_ekspektasi_akhir": float(cl.nilai_ekspektasi_akhir),
-            "nilai_diangkut": float(cl.nilai_diangkut)
+            "nilai_diangkut": float(cl.nilai_diangkut),
         } for cl in cluster_items]
 
-        # Ambil sudut polar
+        # Ambil sudut polar dari DailyPengepul
         dp_map = {
             dp.id: dp.sudut_polar
             for dp in db.query(DailyPengepul)
@@ -458,8 +454,8 @@ def generate_routes(
                 alamat=loc["alamat"],
                 nilai_diangkut=loc["nilai_diangkut"],
                 order_no=i + 1,
-                durasi_dari_sebelumnya_menit=round(durasi, 2),
-                jarak_dari_sebelumnya_km=round(jarak, 2),
+                waktu_tempuh=round(durasi, 2),
+                jarak_tempuh_km=round(jarak, 2),
                 is_optimized=optimize
             )
             db.add(route)
