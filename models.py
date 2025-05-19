@@ -95,6 +95,8 @@ class Cluster(Base):
     # Relationship
     daily_pengepul = relationship("DailyPengepul", back_populates="clusters")
     vehicle = relationship("Vehicle", back_populates="clusters")
+    
+    sequence = Column(Integer, nullable=True)
 
     # Cascade relationship ke ClusterRoute
     cluster_routes = relationship(

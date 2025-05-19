@@ -251,9 +251,10 @@ def reset_daily_pengepul(tanggal: date, db: Session):
 
 @cluster_router.get("/clustering")
 def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
+    # Cek apakah sudah pernah di-cluster
     clusters_existing = db.query(Cluster).join(DailyPengepul).filter(
         DailyPengepul.tanggal_cluster == tanggal
-    ).all()
+    ).order_by(Cluster.cluster_id, Cluster.sequence).all()  # <--- Urut berdasarkan cluster dan urutan
 
     existing_ids = set(
         r[0] for r in db.query(Cluster.daily_pengepul_id)
@@ -268,7 +269,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
     ).count() > 0
 
     if clusters_existing and not new_data_available:
-        # Kalau udah ada cluster dan gak ada data baru → tinggal tampilkan
+        # Data lama → tinggal tampilkan
         flat_data = []
         for cluster in clusters_existing:
             loc = cluster.daily_pengepul
@@ -291,7 +292,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
             data=flat_data
         )
 
-    # Kalau ada cluster sebelumnya dan ada data baru → reset dan cluster ulang
+    # Kalau ada cluster lama + data baru → reset
     if clusters_existing and new_data_available:
         reset_daily_pengepul(tanggal, db)
 
@@ -305,11 +306,24 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
         return standard_response(message="Data lokasi atau kendaraan kosong", status_code=400)
 
     hasil_cluster, _ = sweep_algorithm(locations, vehicles, db)
+
+    # Simpan hasil clustering ke DB
+    for cluster in hasil_cluster:
+        for idx, loc in enumerate(cluster["locations"]):
+            cluster_instance = Cluster(
+                daily_pengepul_id=loc["id"],
+                vehicle_id=cluster["vehicle_id"],
+                nilai_diangkut=loc["nilai_diangkut"],
+                cluster_id=cluster["cluster_id"],
+                sequence=idx  # Simpan urutan kunjungan di sini
+            )
+            db.add(cluster_instance)
     db.commit()
 
+    # Format hasil output
     flat_data = []
     for cluster in hasil_cluster:
-        for loc in cluster["locations"]:
+        for idx, loc in enumerate(cluster["locations"]):
             flat_data.append({
                 **loc,
                 "nilai_ekspektasi": float(loc.get("nilai_ekspektasi", 0.0)),
@@ -318,7 +332,8 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_diangkut": float(loc.get("nilai_diangkut", 0.0)),
                 "status": "Sudah di-cluster" if float(loc.get("nilai_ekspektasi_akhir", 0.0)) == 0 else "Belum di-cluster",
                 "cluster_id": cluster["cluster_id"],
-                "nama_kendaraan": cluster["nama_kendaraan"]
+                "nama_kendaraan": cluster["nama_kendaraan"],
+                "sequence": idx
             })
 
     return standard_response(
@@ -334,15 +349,21 @@ def generate_routes(
 ):
     from collections import defaultdict
 
+    print(f"\n[DEBUG] Param optimize = {optimize}")
+    print(f"[DEBUG] Tanggal = {tanggal}")
+
     clusters = db.query(Cluster).filter(Cluster.tanggal_cluster == tanggal).all()
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    # ✅ Cek dulu, apakah udah ada ClusterRoute dengan status is_optimized sesuai query
+    # Cek apakah sudah ada ClusterRoute yang sesuai
     existing_routes = db.query(ClusterRoute).filter(
         ClusterRoute.tanggal_cluster == tanggal,
         ClusterRoute.is_optimized == optimize
     ).all()
+
+    print(f"[DEBUG] Found {len(existing_routes)} existing ClusterRoute (is_optimized={optimize})")
+
     if existing_routes:
         hasil_routes = []
         cluster_group = defaultdict(list)
@@ -399,11 +420,13 @@ def generate_routes(
             }
         )
 
-    # ✅ Kalau belum ada data, lanjut ke proses hapus dan generate ulang
+    # Hapus data sebelumnya (semua route untuk tanggal ini)
     cluster_pk_map = {c.cluster_id: c.id for c in clusters}
     cluster_pk_list = list(cluster_pk_map.values())
+
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
+    print(f"[DEBUG] Deleted old ClusterRoute for tanggal={tanggal}")
 
     hasil_routes = []
     cluster_dict = defaultdict(list)
@@ -411,6 +434,7 @@ def generate_routes(
         cluster_dict[cl.cluster_id].append(cl)
 
     for cluster_id in sorted(cluster_dict.keys()):
+        print(f"\n[DEBUG] Processing cluster_id={cluster_id}")
         cluster_items = cluster_dict[cluster_id]
         vehicle_id = cluster_items[0].vehicle_id
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
@@ -439,13 +463,16 @@ def generate_routes(
         for loc in lokasi_list:
             loc["sudut_polar"] = dp_map.get(loc["daily_pengepul_id"], 0)
 
-        lokasi_list.sort(key=lambda x: x["sudut_polar"], reverse=True)
-
-        try:
-            ordered_locations = nearest_neighbor(lokasi_list)
-        except Exception as e:
-            print(f"ERROR saat nearest_neighbor cluster {cluster_id}: {e}")
-            continue
+        if optimize:
+            print("[DEBUG] Sorting with Nearest Neighbor (optimize=True)")
+            try:
+                ordered_locations = nearest_neighbor(lokasi_list)
+            except Exception as e:
+                print(f"[ERROR] nearest_neighbor error for cluster {cluster_id}: {e}")
+                continue
+        else:
+            print("[DEBUG] Sorting with polar angle only (optimize=False)")
+            ordered_locations = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
         if not ordered_locations:
             continue
@@ -503,8 +530,10 @@ def generate_routes(
                 nilai_ekspektasi_akhir=loc["nilai_ekspektasi_akhir"],
                 nilai_diangkut=loc["nilai_diangkut"],
                 tanggal_cluster=tanggal,
-                is_optimized=optimize  # 👈 Tambahin ini bro
+                is_optimized=optimize
             ))
+
+            print(f"[DEBUG] INSERT route {idx+1} | is_optimized={optimize} | daily_pengepul_id={loc['daily_pengepul_id']}")
 
             location_entry.sudah_diambil = True
             total_nilai_angkut += loc["nilai_diangkut"]
@@ -536,8 +565,10 @@ def generate_routes(
 
     try:
         db.commit()
+        print("[DEBUG] DB Commit berhasil")
     except Exception as e:
         db.rollback()
+        print(f"[ERROR] DB Commit error: {e}")
         return standard_response(message=f"DB Commit Error: {e}", status_code=500)
 
     return standard_response(
