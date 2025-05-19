@@ -626,6 +626,8 @@ def get_cluster_routes(
             "nama_pengepul": r.nama_pengepul,
             "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "",
             "nilai_ekspektasi_awal": r.nilai_ekspektasi_awal,
+            "nilai_ekspektasi_akhir": r.nilai_ekspektasi_akhir,
+            "nilai_diangkut": r.nilai_diangkut,
             "alamat": r.alamat
         })
 
