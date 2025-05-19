@@ -85,22 +85,15 @@ def _raw_ors_directions(origin: tuple[float, float], destination: tuple[float, f
 # Public API (with cache)
 @lru_cache(maxsize=20_000)
 def ors_directions_request(origin: tuple[float, float], destination: tuple[float, float], profile: str = "driving-car"):
-    """Return (duration_minutes, distance_km) with caching."""
+    """Return (duration_h, distance_km) using 2-level cache (RAM + file)."""
     k = _make_key(origin, destination)
     if (cached := _FILE_CACHE.get(k)) is not None:
         return cached["d"], cached["s"]
 
     dur, dist = _raw_ors_directions(origin, destination, profile)
-
-    # Fallback default kalau ORS gagal
-    if dur is None or dist is None:
-        print(f"[WARNING] ORS gagal antara {origin} ke {destination}, fallback ke 15m, 1km")
-        dur = 15.0  # default durasi: 15 menit
-        dist = 1.0  # default jarak: 1 km
-
-    _FILE_CACHE[k] = {"d": dur, "s": dist, "ts": time.time()}
-    _save_file_cache()
-
+    if dur is not None:
+        _FILE_CACHE[k] = {"d": dur, "s": dist, "ts": time.time()}
+        _save_file_cache()
     return dur, dist
 
 # Optional preload matrix
