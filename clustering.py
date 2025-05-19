@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from models import DailyPengepul, Location, Vehicle, Cluster, ClusterRoute, TimeDistanceMatrix
@@ -192,27 +193,34 @@ def cached_ors_request(origin: tuple, dest: tuple) -> float:
     _, dist = ors_directions_request(origin, dest)
     return dist or float("inf")
 
-def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
-    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
-    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
-
-    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
-    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
+def build_distance_matrix(locations: List[dict]) -> dict:
+    """Build distance matrix using OSRM cached durations."""
     matrix = {}
-
-    for i in range(len(coords)):
-        for j in range(len(coords)):
-            if i == j:
+    depot = (float(os.getenv("DEPOT_LNG", "106.827153")), float(os.getenv("DEPOT_LAT", "-6.175392")))
+    
+    for loc1 in locations:
+        id1 = str(loc1.get("daily_pengepul_id") or loc1.get("id"))
+        coord1 = (loc1["longitude"], loc1["latitude"])
+        
+        # From depot to loc1
+        dur, _ = ors_directions_request(depot, coord1)
+        matrix[f"DEPOT:{id1}"] = dur
+        
+        # From loc1 to depot
+        dur, _ = ors_directions_request(coord1, depot)
+        matrix[f"{id1}:DEPOT"] = dur
+        
+        for loc2 in locations:
+            if loc1 == loc2:
                 continue
-            key = f"{id_map[i]}:{id_map[j]}"
-            origin = coords[i]
-            dest = coords[j]
-            dist = cached_ors_request(origin, dest)
-            matrix[key] = dist
-
+            id2 = str(loc2.get("daily_pengepul_id") or loc2.get("id"))
+            coord2 = (loc2["longitude"], loc2["latitude"])
+            dur, _ = ors_directions_request(coord1, coord2)
+            matrix[f"{id1}:{id2}"] = dur
     return matrix
 
 def nearest_neighbor(locations: List[dict]) -> List[dict]:
+    """Find optimized route based on OSRM travel time (duration)."""
     if not locations:
         return []
 
