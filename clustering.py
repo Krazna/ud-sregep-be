@@ -196,7 +196,7 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
     coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
     coords.insert(0, (DEPOT_LON, DEPOT_LAT))
 
-    # Ambil ID yang konsisten untuk key matrix
+    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
     id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
     matrix = {}
 
@@ -212,7 +212,7 @@ def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
 
     return matrix
 
-def nearest_neighbor(locations: List[dict]):
+def nearest_neighbor(locations: List[dict]) -> List[dict]:
     if not locations:
         return []
 
@@ -230,10 +230,11 @@ def nearest_neighbor(locations: List[dict]):
             )
         )
         route.append(next_loc)
-        current_id = str(next_loc.get('daily_pengepul_id') or next_loc.get('id'))
+        current_id = str(next_loc.get("daily_pengepul_id") or next_loc.get("id"))
         unvisited.remove(next_loc)
 
     return route
+
 
 def reset_daily_pengepul(tanggal: date, db: Session):
     # Hapus semua data Cluster di tanggal itu
