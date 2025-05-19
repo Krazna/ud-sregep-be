@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from models import DailyPengepul, Location, Vehicle, Cluster, ClusterRoute, TimeDistanceMatrix
@@ -36,19 +37,19 @@ def standard_response(data=None, message: str = "Success", status_code: int = 20
 
 MAX_CLUSTER_PER_DAY = 3
 
+MAX_CLUSTER_PER_DAY = 3
+
 def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db: Session):
     hasil_cluster = []
-    # Urutkan berdasarkan sudut polar menurun
     remaining_locations = sorted(locations[:], key=lambda l: l.sudut_polar, reverse=True)
 
     if not remaining_locations:
         return hasil_cluster, []
 
     current_date = remaining_locations[0].tanggal_cluster
-    cluster_id_harian = 1
 
     while any(loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" for loc in remaining_locations):
-        while current_date.weekday() == 6:  # Skip hari Minggu
+        while current_date.weekday() == 6:  # Skip Minggu
             current_date += timedelta(days=1)
 
         print(f"\n📆 Mulai clustering tanggal: {current_date}")
@@ -65,18 +66,19 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                 current_cluster = []
                 used_locations = []
 
-                # Sort ulang berdasarkan sudut polar setiap loop kendaraan
                 sorted_locations = sorted(
                     [loc for loc in remaining_locations if loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" and loc.tanggal_cluster <= current_date],
                     key=lambda l: l.sudut_polar,
                     reverse=True
                 )
 
+                if not sorted_locations:
+                    continue
+
                 for loc in sorted_locations:
                     if total_load >= kapasitas:
                         break
 
-                    # Hitung durasi dan jarak dari previous location atau depot
                     if prev_loc is None:
                         dur, dist = ors_directions_request((DEPOT_LON, DEPOT_LAT), (loc.longitude, loc.latitude))
                     else:
@@ -120,22 +122,6 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                             "jarak_tempuh_km": round(float(dist), 2),
                         })
 
-                        cluster = Cluster(
-                            cluster_id=cluster_id_harian,
-                            daily_pengepul_id=loc.id,
-                            vehicle_id=vehicle.id,
-                            nama_pengepul=loc.nama_pengepul,
-                            alamat=loc.alamat,
-                            nilai_ekspektasi=muatan_bisa_diangkut,
-                            nilai_ekspektasi_awal=nilai_awal,
-                            nilai_ekspektasi_akhir=loc.nilai_ekspektasi_akhir,
-                            latitude=loc.latitude,
-                            longitude=loc.longitude,
-                            nilai_diangkut=muatan_bisa_diangkut,
-                            tanggal_cluster=current_date
-                        )
-                        db.add(cluster)
-
                         total_load += muatan_bisa_diangkut
                         total_time += waktu_di_lokasi
                         total_distance += dist
@@ -147,6 +133,33 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                     _, dist_back_last = ors_directions_request((last.longitude, last.latitude), (DEPOT_LON, DEPOT_LAT))
                     total_time += dist_back_last / SPEED + calculate_red_light_time(dist_back_last)
                     total_distance += dist_back_last
+
+                    for idx, loc in enumerate(used_locations):
+                        existing_cluster = db.query(Cluster).filter_by(
+                            daily_pengepul_id=loc.id,
+                            tanggal_cluster=current_date,
+                            cluster_id=cluster_id_harian
+                        ).first()
+
+                        if existing_cluster:
+                            continue
+
+                        cluster = Cluster(
+                            cluster_id=cluster_id_harian,
+                            daily_pengepul_id=loc.id,
+                            vehicle_id=vehicle.id,
+                            nama_pengepul=loc.nama_pengepul,
+                            alamat=loc.alamat,
+                            nilai_ekspektasi=loc.nilai_ekspektasi_awal,
+                            nilai_ekspektasi_awal=loc.nilai_ekspektasi_awal,
+                            nilai_ekspektasi_akhir=loc.nilai_ekspektasi_akhir,
+                            latitude=loc.latitude,
+                            longitude=loc.longitude,
+                            nilai_diangkut=loc.nilai_ekspektasi_awal - loc.nilai_ekspektasi_akhir,
+                            tanggal_cluster=current_date,
+                            sequence=idx
+                        )
+                        db.add(cluster)
 
                     hasil_cluster.append({
                         "cluster_id": cluster_id_harian,
@@ -162,7 +175,7 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                         any_vehicle_used = True
                         cluster_hari_ini += 1
                         cluster_id_harian += 1
-                        print(f"✅ Cluster {cluster_id_harian-1} selesai dengan {len(current_cluster)} lokasi")
+                        print(f"✅ Cluster {cluster_id_harian - 1} selesai dengan {len(current_cluster)} lokasi")
                         if cluster_hari_ini >= MAX_CLUSTER_PER_DAY:
                             print(f"⚠️ Max cluster per hari tercapai ({MAX_CLUSTER_PER_DAY})")
                             break
@@ -175,7 +188,7 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                 print("⚠️ Tidak ada kendaraan yang bisa digunakan hari ini.")
                 break
 
-        # Update tanggal_cluster ke hari berikutnya jika belum ter-cluster
+        # Update tanggal cluster pengepul yang belum selesai
         for loc in remaining_locations:
             if loc.nilai_ekspektasi_akhir > 0 and loc.tanggal_cluster <= current_date and loc.status != "Sudah di-cluster":
                 loc.tanggal_cluster = current_date + timedelta(days=1)
@@ -192,27 +205,34 @@ def cached_ors_request(origin: tuple, dest: tuple) -> float:
     _, dist = ors_directions_request(origin, dest)
     return dist or float("inf")
 
-def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
-    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
-    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
-
-    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
-    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
+def build_distance_matrix(locations: List[dict]) -> dict:
+    """Build distance matrix using OSRM cached durations."""
     matrix = {}
-
-    for i in range(len(coords)):
-        for j in range(len(coords)):
-            if i == j:
+    depot = (DEPOT_LON, DEPOT_LAT)
+    
+    for loc1 in locations:
+        id1 = str(loc1.get("daily_pengepul_id") or loc1.get("id"))
+        coord1 = (loc1["longitude"], loc1["latitude"])
+        
+        # From depot to loc1
+        dur, _ = ors_directions_request(depot, coord1)
+        matrix[f"DEPOT:{id1}"] = dur
+        
+        # From loc1 to depot
+        dur, _ = ors_directions_request(coord1, depot)
+        matrix[f"{id1}:DEPOT"] = dur
+        
+        for loc2 in locations:
+            if loc1 == loc2:
                 continue
-            key = f"{id_map[i]}:{id_map[j]}"
-            origin = coords[i]
-            dest = coords[j]
-            dist = cached_ors_request(origin, dest)
-            matrix[key] = dist
-
+            id2 = str(loc2.get("daily_pengepul_id") or loc2.get("id"))
+            coord2 = (loc2["longitude"], loc2["latitude"])
+            dur, _ = ors_directions_request(coord1, coord2)
+            matrix[f"{id1}:{id2}"] = dur
     return matrix
 
 def nearest_neighbor(locations: List[dict]) -> List[dict]:
+    """Find optimized route based on OSRM travel time (duration)."""
     if not locations:
         return []
 
@@ -254,7 +274,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
     # Cek apakah sudah pernah di-cluster
     clusters_existing = db.query(Cluster).join(DailyPengepul).filter(
         DailyPengepul.tanggal_cluster == tanggal
-    ).order_by(Cluster.cluster_id, Cluster.sequence).all()  # <--- Urut berdasarkan cluster dan urutan
+    ).order_by(Cluster.cluster_id, Cluster.sequence).all()
 
     existing_ids = set(
         r[0] for r in db.query(Cluster.daily_pengepul_id)
@@ -269,7 +289,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
     ).count() > 0
 
     if clusters_existing and not new_data_available:
-        # Data lama → tinggal tampilkan
+        # Tampilkan data cluster lama
         flat_data = []
         for cluster in clusters_existing:
             loc = cluster.daily_pengepul
@@ -296,6 +316,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
     if clusters_existing and new_data_available:
         reset_daily_pengepul(tanggal, db)
 
+    # Mulai proses clustering
     locations = db.query(DailyPengepul).filter(
         DailyPengepul.tanggal_cluster == tanggal
     ).order_by(DailyPengepul.sudut_polar).all()
@@ -307,20 +328,7 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
 
     hasil_cluster, _ = sweep_algorithm(locations, vehicles, db)
 
-    # Simpan hasil clustering ke DB
-    for cluster in hasil_cluster:
-        for idx, loc in enumerate(cluster["locations"]):
-            cluster_instance = Cluster(
-                daily_pengepul_id=loc["id"],
-                vehicle_id=cluster["vehicle_id"],
-                nilai_diangkut=loc["nilai_diangkut"],
-                cluster_id=cluster["cluster_id"],
-                sequence=idx  # Simpan urutan kunjungan di sini
-            )
-            db.add(cluster_instance)
-    db.commit()
-
-    # Format hasil output
+    # Format output (tanpa simpan ulang ke DB)
     flat_data = []
     for cluster in hasil_cluster:
         for idx, loc in enumerate(cluster["locations"]):
@@ -356,7 +364,6 @@ def generate_routes(
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    # Cek apakah sudah ada ClusterRoute yang sesuai
     existing_routes = db.query(ClusterRoute).filter(
         ClusterRoute.tanggal_cluster == tanggal,
         ClusterRoute.is_optimized == optimize
@@ -420,10 +427,8 @@ def generate_routes(
             }
         )
 
-    # Hapus data sebelumnya (semua route untuk tanggal ini)
     cluster_pk_map = {c.cluster_id: c.id for c in clusters}
     cluster_pk_list = list(cluster_pk_map.values())
-
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
     print(f"[DEBUG] Deleted old ClusterRoute for tanggal={tanggal}")
@@ -440,18 +445,24 @@ def generate_routes(
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
         cluster_pk = cluster_pk_map[cluster_id]
 
-        lokasi_list = [{
-            "id": cl.daily_pengepul_id,
-            "cluster_entry_id": cl.id,
-            "daily_pengepul_id": cl.daily_pengepul_id,
-            "nama_pengepul": cl.nama_pengepul,
-            "alamat": cl.alamat,
-            "latitude": float(cl.latitude),
-            "longitude": float(cl.longitude),
-            "nilai_ekspektasi_awal": float(cl.nilai_ekspektasi_awal),
-            "nilai_ekspektasi_akhir": float(cl.nilai_ekspektasi_akhir),
-            "nilai_diangkut": float(cl.nilai_diangkut)
-        } for cl in cluster_items]
+        lokasi_list = []
+        for cl in cluster_items:
+            if cl.latitude is None or cl.longitude is None:
+                print(f"[WARNING] Skipping daily_pengepul_id={cl.daily_pengepul_id} karena latitude/longitude kosong")
+                continue
+
+            lokasi_list.append({
+                "id": cl.daily_pengepul_id,
+                "cluster_entry_id": cl.id,
+                "daily_pengepul_id": cl.daily_pengepul_id,
+                "nama_pengepul": cl.nama_pengepul,
+                "alamat": cl.alamat,
+                "latitude": float(cl.latitude),
+                "longitude": float(cl.longitude),
+                "nilai_ekspektasi_awal": float(cl.nilai_ekspektasi_awal),
+                "nilai_ekspektasi_akhir": float(cl.nilai_ekspektasi_akhir),
+                "nilai_diangkut": float(cl.nilai_diangkut)
+            })
 
         dp_map = {
             dp.id: dp.sudut_polar
@@ -618,6 +629,8 @@ def get_cluster_routes(
             "nama_pengepul": r.nama_pengepul,
             "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "",
             "nilai_ekspektasi_awal": r.nilai_ekspektasi_awal,
+            "nilai_ekspektasi_akhir": r.nilai_ekspektasi_akhir,
+            "nilai_diangkut": r.nilai_diangkut,
             "alamat": r.alamat
         })
 
