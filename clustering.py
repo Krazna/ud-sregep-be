@@ -34,6 +34,32 @@ def calculate_red_light_time(distance_km: float) -> float:
 def standard_response(data=None, message: str = "Success", status_code: int = 200):
     return JSONResponse(status_code=status_code, content={"message": message, "data": data})
 
+@lru_cache(maxsize=1024)
+def cached_ors_request(origin: tuple, dest: tuple) -> float:
+    """Cached ORS request untuk jarak (km)"""
+    _, dist = ors_directions_request(origin, dest)
+    return dist or float("inf")
+
+def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
+    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
+    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
+
+    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
+    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
+    matrix = {}
+
+    for i in range(len(coords)):
+        for j in range(len(coords)):
+            if i == j:
+                continue
+            key = f"{id_map[i]}:{id_map[j]}"
+            origin = coords[i]
+            dest = coords[j]
+            dist = cached_ors_request(origin, dest)
+            matrix[key] = dist
+
+    return matrix
+
 MAX_CLUSTER_PER_DAY = 3
 
 def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db: Session):
@@ -186,33 +212,8 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
 
     return hasil_cluster, []
 
-@lru_cache(maxsize=1024)
-def cached_ors_request(origin: tuple, dest: tuple) -> float:
-    """Cached ORS request untuk jarak (km)"""
-    _, dist = ors_directions_request(origin, dest)
-    return dist or float("inf")
-
-def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
-    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
-    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
-
-    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
-    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
-    matrix = {}
-
-    for i in range(len(coords)):
-        for j in range(len(coords)):
-            if i == j:
-                continue
-            key = f"{id_map[i]}:{id_map[j]}"
-            origin = coords[i]
-            dest = coords[j]
-            dist = cached_ors_request(origin, dest)
-            matrix[key] = dist
-
-    return matrix
-
 def nearest_neighbor(locations: List[dict]) -> List[dict]:
+    """Find optimized route based on OSRM travel time (duration)."""
     if not locations:
         return []
 
@@ -234,7 +235,6 @@ def nearest_neighbor(locations: List[dict]) -> List[dict]:
         unvisited.remove(next_loc)
 
     return route
-
 
 def reset_daily_pengepul(tanggal: date, db: Session):
     # Hapus semua data Cluster di tanggal itu
@@ -349,15 +349,21 @@ def generate_routes(
 ):
     from collections import defaultdict
 
+    print(f"\n[DEBUG] Param optimize = {optimize}")
+    print(f"[DEBUG] Tanggal = {tanggal}")
+
     clusters = db.query(Cluster).filter(Cluster.tanggal_cluster == tanggal).all()
     if not clusters:
         return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
 
-    # ✅ Cek dulu, apakah udah ada ClusterRoute dengan status is_optimized sesuai query
+    # Cek apakah sudah ada ClusterRoute yang sesuai
     existing_routes = db.query(ClusterRoute).filter(
         ClusterRoute.tanggal_cluster == tanggal,
         ClusterRoute.is_optimized == optimize
     ).all()
+
+    print(f"[DEBUG] Found {len(existing_routes)} existing ClusterRoute (is_optimized={optimize})")
+
     if existing_routes:
         hasil_routes = []
         cluster_group = defaultdict(list)
@@ -414,11 +420,13 @@ def generate_routes(
             }
         )
 
-    # ✅ Kalau belum ada data, lanjut ke proses hapus dan generate ulang
+    # Hapus data sebelumnya (semua route untuk tanggal ini)
     cluster_pk_map = {c.cluster_id: c.id for c in clusters}
     cluster_pk_list = list(cluster_pk_map.values())
+
     db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
+    print(f"[DEBUG] Deleted old ClusterRoute for tanggal={tanggal}")
 
     hasil_routes = []
     cluster_dict = defaultdict(list)
@@ -426,6 +434,7 @@ def generate_routes(
         cluster_dict[cl.cluster_id].append(cl)
 
     for cluster_id in sorted(cluster_dict.keys()):
+        print(f"\n[DEBUG] Processing cluster_id={cluster_id}")
         cluster_items = cluster_dict[cluster_id]
         vehicle_id = cluster_items[0].vehicle_id
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
@@ -454,13 +463,16 @@ def generate_routes(
         for loc in lokasi_list:
             loc["sudut_polar"] = dp_map.get(loc["daily_pengepul_id"], 0)
 
-        lokasi_list.sort(key=lambda x: x["sudut_polar"], reverse=True)
-
-        try:
-            ordered_locations = nearest_neighbor(lokasi_list)
-        except Exception as e:
-            print(f"ERROR saat nearest_neighbor cluster {cluster_id}: {e}")
-            continue
+        if optimize:
+            print("[DEBUG] Sorting with Nearest Neighbor (optimize=True)")
+            try:
+                ordered_locations = nearest_neighbor(lokasi_list)
+            except Exception as e:
+                print(f"[ERROR] nearest_neighbor error for cluster {cluster_id}: {e}")
+                continue
+        else:
+            print("[DEBUG] Sorting with polar angle only (optimize=False)")
+            ordered_locations = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
         if not ordered_locations:
             continue
@@ -518,8 +530,10 @@ def generate_routes(
                 nilai_ekspektasi_akhir=loc["nilai_ekspektasi_akhir"],
                 nilai_diangkut=loc["nilai_diangkut"],
                 tanggal_cluster=tanggal,
-                is_optimized=optimize  # 👈 Tambahin ini bro
+                is_optimized=optimize
             ))
+
+            print(f"[DEBUG] INSERT route {idx+1} | is_optimized={optimize} | daily_pengepul_id={loc['daily_pengepul_id']}")
 
             location_entry.sudah_diambil = True
             total_nilai_angkut += loc["nilai_diangkut"]
@@ -551,8 +565,10 @@ def generate_routes(
 
     try:
         db.commit()
+        print("[DEBUG] DB Commit berhasil")
     except Exception as e:
         db.rollback()
+        print(f"[ERROR] DB Commit error: {e}")
         return standard_response(message=f"DB Commit Error: {e}", status_code=500)
 
     return standard_response(
@@ -602,6 +618,8 @@ def get_cluster_routes(
             "nama_pengepul": r.nama_pengepul,
             "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "",
             "nilai_ekspektasi_awal": r.nilai_ekspektasi_awal,
+            "nilai_ekspektasi_akhir": r.nilai_ekspektasi_akhir,
+            "nilai_diangkut": r.nilai_diangkut,
             "alamat": r.alamat
         })
 
