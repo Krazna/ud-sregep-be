@@ -196,28 +196,40 @@ def cached_ors_request(origin: tuple, dest: tuple) -> float:
 def build_distance_matrix(locations: List[dict]) -> dict:
     """Build distance matrix using OSRM cached durations."""
     matrix = {}
-    depot = (float(os.getenv("DEPOT_LNG", "110.34369342557244")), float(os.getenv("DEPOT_LAT", "-7.735771367498664")))
-    
+    depot = (
+        float(os.getenv("DEPOT_LNG", "110.34369342557244")),
+        float(os.getenv("DEPOT_LAT", "-7.735771367498664"))
+    )
+
     for loc1 in locations:
         id1 = str(loc1.get("daily_pengepul_id") or loc1.get("id"))
         coord1 = (loc1["longitude"], loc1["latitude"])
-        
+
         # From depot to loc1
         dur, _ = ors_directions_request(depot, coord1)
+        if dur == 0:
+            print(f"[WARNING] Durasi 0 dari DEPOT ke {id1}")
         matrix[f"DEPOT:{id1}"] = dur
-        
+
         # From loc1 to depot
         dur, _ = ors_directions_request(coord1, depot)
+        if dur == 0:
+            print(f"[WARNING] Durasi 0 dari {id1} ke DEPOT")
         matrix[f"{id1}:DEPOT"] = dur
-        
+
         for loc2 in locations:
             if loc1 == loc2:
                 continue
             id2 = str(loc2.get("daily_pengepul_id") or loc2.get("id"))
             coord2 = (loc2["longitude"], loc2["latitude"])
+
             dur, _ = ors_directions_request(coord1, coord2)
+            if dur == 0:
+                print(f"[WARNING] Durasi 0 dari {id1} ke {id2}")
             matrix[f"{id1}:{id2}"] = dur
+
     return matrix
+
 def nearest_neighbor(locations: List[dict], distance_matrix: dict) -> List[dict]:
     """Find optimized route using nearest neighbor based on provided distance matrix."""
     if not locations:
