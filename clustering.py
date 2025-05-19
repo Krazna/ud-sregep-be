@@ -34,32 +34,6 @@ def calculate_red_light_time(distance_km: float) -> float:
 def standard_response(data=None, message: str = "Success", status_code: int = 200):
     return JSONResponse(status_code=status_code, content={"message": message, "data": data})
 
-@lru_cache(maxsize=1024)
-def cached_ors_request(origin: tuple, dest: tuple) -> float:
-    """Cached ORS request untuk jarak (km)"""
-    _, dist = ors_directions_request(origin, dest)
-    return dist or float("inf")
-
-def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
-    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
-    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
-
-    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
-    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
-    matrix = {}
-
-    for i in range(len(coords)):
-        for j in range(len(coords)):
-            if i == j:
-                continue
-            key = f"{id_map[i]}:{id_map[j]}"
-            origin = coords[i]
-            dest = coords[j]
-            dist = cached_ors_request(origin, dest)
-            matrix[key] = dist
-
-    return matrix
-
 MAX_CLUSTER_PER_DAY = 3
 
 def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db: Session):
@@ -212,11 +186,37 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
 
     return hasil_cluster, []
 
-def nearest_neighbor(locations: List[dict], distance_matrix: dict) -> List[dict]:
-    """Find optimized route using nearest neighbor based on provided distance matrix."""
+@lru_cache(maxsize=1024)
+def cached_ors_request(origin: tuple, dest: tuple) -> float:
+    """Cached ORS request untuk jarak (km)"""
+    _, dist = ors_directions_request(origin, dest)
+    return dist or float("inf")
+
+def build_distance_matrix(locations: List[dict]) -> dict[str, float]:
+    coords = [(loc["longitude"], loc["latitude"]) for loc in locations]
+    coords.insert(0, (DEPOT_LON, DEPOT_LAT))
+
+    # ID yang konsisten: 'DEPOT', lalu ID dari DailyPengepul
+    id_map = ["DEPOT"] + [str(loc.get("daily_pengepul_id") or loc.get("id")) for loc in locations]
+    matrix = {}
+
+    for i in range(len(coords)):
+        for j in range(len(coords)):
+            if i == j:
+                continue
+            key = f"{id_map[i]}:{id_map[j]}"
+            origin = coords[i]
+            dest = coords[j]
+            dist = cached_ors_request(origin, dest)
+            matrix[key] = dist
+
+    return matrix
+
+def nearest_neighbor(locations: List[dict]) -> List[dict]:
     if not locations:
         return []
 
+    distance_matrix = build_distance_matrix(locations)
     unvisited = locations[:]
     route = []
     current_id = "DEPOT"
@@ -234,6 +234,7 @@ def nearest_neighbor(locations: List[dict], distance_matrix: dict) -> List[dict]
         unvisited.remove(next_loc)
 
     return route
+
 
 def reset_daily_pengepul(tanggal: date, db: Session):
     # Hapus semua data Cluster di tanggal itu
@@ -351,50 +352,66 @@ def generate_routes(
     print(f"\n[DEBUG] Param optimize = {optimize}")
     print(f"[DEBUG] Tanggal = {tanggal}")
 
+    clusters = db.query(Cluster).filter(Cluster.tanggal_cluster == tanggal).all()
+    if not clusters:
+        return standard_response(message="Belum ada cluster untuk tanggal ini", status_code=400)
+
+    # Cek apakah sudah ada ClusterRoute yang sesuai
     existing_routes = db.query(ClusterRoute).filter(
         ClusterRoute.tanggal_cluster == tanggal,
         ClusterRoute.is_optimized == optimize
     ).all()
 
+    print(f"[DEBUG] Found {len(existing_routes)} existing ClusterRoute (is_optimized={optimize})")
+
     if existing_routes:
-        print("[INFO] Route sudah tersedia, ambil dari DB")
-        grouped = defaultdict(list)
-        for r in existing_routes:
-            grouped[r.cluster_id].append(r)
-
         hasil_routes = []
-        for cluster_id, routes in grouped.items():
-            rute_list = ["Depot"] + [r.nama_pengepul for r in routes] + ["Depot"]
-            total_jarak = sum(r.jarak_tempuh_km for r in routes)
-            total_waktu_menit = sum(float(r.waktu_tempuh.replace(" menit", "")) for r in routes)
-            total_nilai = sum(r.nilai_diangkut for r in routes)
+        cluster_group = defaultdict(list)
+        for cr in existing_routes:
+            cluster_group[cr.cluster_id].append(cr)
 
+        for cluster_id, routes in cluster_group.items():
+            vehicle_id = routes[0].vehicle_id
+            vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+
+            route_list = []
+            total_nilai = 0.0
+            total_waktu = 0
+            total_jarak = 0.0
+            rute = ["Depot"]
+
+            for r in routes:
+                total_nilai += r.nilai_diangkut or 0
+                total_waktu += int(r.waktu_tempuh or 0)
+                total_jarak += float(r.jarak_tempuh_km or 0)
+                rute.append(r.nama_pengepul or "Pengepul")
+
+                route_list.append({
+                    "order_no": r.order_no,
+                    "daily_pengepul_id": r.daily_pengepul_id,
+                    "nama_pengepul": r.nama_pengepul,
+                    "nama_kendaraan": vehicle.nama_kendaraan if vehicle else "",
+                    "total_waktu": format_waktu(int(r.waktu_tempuh) / 3600),
+                    "jarak_km": r.jarak_tempuh_km,
+                    "nilai_awal": r.nilai_ekspektasi_awal,
+                    "nilai_akhir": r.nilai_ekspektasi_akhir,
+                    "nilai_diangkut": r.nilai_diangkut,
+                    "alamat": r.alamat
+                })
+
+            rute.append("Depot")
             hasil_routes.append({
                 "cluster_id": cluster_id,
-                "vehicle_id": routes[0].vehicle_id if routes else None,
-                "rute": " -> ".join(rute_list),
+                "vehicle_id": vehicle_id,
+                "routes": route_list,
+                "rute": " -> ".join(rute),
                 "total_jarak_cluster_km": round(total_jarak, 2),
-                "total_waktu_cluster": f"{int(total_waktu_menit // 60)}j {int(total_waktu_menit % 60)}m",
-                "total_nilai_diangkut": round(total_nilai, 2),
-                "routes": [
-                    {
-                        "order_no": r.order_no,
-                        "daily_pengepul_id": r.daily_pengepul_id,
-                        "nama_pengepul": r.nama_pengepul,
-                        "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "-",
-                        "total_waktu": f"{int(float(r.waktu_tempuh.replace(' menit', '')) // 60)}j {int(float(r.waktu_tempuh.replace(' menit', '')) % 60)}m",
-                        "jarak_km": r.jarak_tempuh_km,
-                        "nilai_awal": r.nilai_ekspektasi_awal,
-                        "nilai_akhir": r.nilai_ekspektasi_akhir,
-                        "nilai_diangkut": r.nilai_diangkut,
-                        "alamat": r.alamat
-                    }
-                    for r in routes
-                ]
+                "total_waktu_cluster": format_waktu(total_waktu / 3600),
+                "total_nilai_diangkut": total_nilai
             })
 
         return standard_response(
-            message="Data route tersedia dan sudah diambil dari DB",
+            message="Data existing berhasil diambil (tidak regenerate)",
             data={
                 "tanggal": tanggal.isoformat(),
                 "is_optimized": optimize,
@@ -403,34 +420,30 @@ def generate_routes(
             }
         )
 
-    # Kalau belum ada, generate baru
-    clusters = db.query(Cluster).filter(Cluster.tanggal_cluster == tanggal).all()
-    if not clusters:
-        return standard_response("Belum ada cluster untuk tanggal ini", status_code=400)
+    # Hapus data sebelumnya (semua route untuk tanggal ini)
+    cluster_pk_map = {c.cluster_id: c.id for c in clusters}
+    cluster_pk_list = list(cluster_pk_map.values())
 
-    cluster_dict = defaultdict(list)
-    cluster_pk_map = {}
-    for c in clusters:
-        cluster_dict[c.cluster_id].append(c)
-        cluster_pk_map[c.cluster_id] = c.id
-
-    db.query(ClusterRoute).filter(
-        ClusterRoute.cluster_id.in_(cluster_pk_map.values())
-    ).delete(synchronize_session=False)
+    db.query(ClusterRoute).filter(ClusterRoute.cluster_id.in_(cluster_pk_list)).delete(synchronize_session=False)
     db.commit()
+    print(f"[DEBUG] Deleted old ClusterRoute for tanggal={tanggal}")
 
     hasil_routes = []
+    cluster_dict = defaultdict(list)
+    for cl in clusters:
+        cluster_dict[cl.cluster_id].append(cl)
 
-    for cluster_id, cluster_items in cluster_dict.items():
-        print(f"[DEBUG] Proses cluster {cluster_id}")
-        cluster_pk = cluster_pk_map[cluster_id]
+    for cluster_id in sorted(cluster_dict.keys()):
+        print(f"\n[DEBUG] Processing cluster_id={cluster_id}")
+        cluster_items = cluster_dict[cluster_id]
         vehicle_id = cluster_items[0].vehicle_id
+        vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+        cluster_pk = cluster_pk_map[cluster_id]
 
         lokasi_list = [{
             "id": cl.daily_pengepul_id,
             "cluster_entry_id": cl.id,
             "daily_pengepul_id": cl.daily_pengepul_id,
-            "location_id": cl.daily_pengepul.location_id if cl.daily_pengepul else None,
             "nama_pengepul": cl.nama_pengepul,
             "alamat": cl.alamat,
             "latitude": float(cl.latitude),
@@ -443,91 +456,123 @@ def generate_routes(
         dp_map = {
             dp.id: dp.sudut_polar
             for dp in db.query(DailyPengepul)
-            .filter(DailyPengepul.id.in_([l["daily_pengepul_id"] for l in lokasi_list]))
+            .filter(DailyPengepul.id.in_([loc["daily_pengepul_id"] for loc in lokasi_list]))
             .all()
         }
+
         for loc in lokasi_list:
             loc["sudut_polar"] = dp_map.get(loc["daily_pengepul_id"], 0)
 
-        distance_matrix = build_distance_matrix(lokasi_list)
-
         if optimize:
-            ordered_locations = nearest_neighbor(lokasi_list, distance_matrix)
+            print("[DEBUG] Sorting with Nearest Neighbor (optimize=True)")
+            try:
+                ordered_locations = nearest_neighbor(lokasi_list)
+            except Exception as e:
+                print(f"[ERROR] nearest_neighbor error for cluster {cluster_id}: {e}")
+                continue
         else:
+            print("[DEBUG] Sorting with polar angle only (optimize=False)")
             ordered_locations = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
-        cluster_result = {
-            "cluster_id": cluster_id,
-            "vehicle_id": vehicle_id,
-            "rute": "",
-            "total_jarak_cluster_km": 0.0,
-            "total_waktu_cluster": "0j 0m",
-            "total_nilai_diangkut": 0.0,
-            "routes": []
-        }
+        if not ordered_locations:
+            continue
 
-        rute_str = ["Depot"]
-        total_jarak = 0.0
-        total_waktu_menit = 0.0
-        total_nilai = 0.0
-        previous_id = "DEPOT"
+        total_waktu_list = []
+        total_jarak_list = []
+        total_nilai_angkut = 0.0
+        rute = ["Depot"]
 
-        for i, loc in enumerate(ordered_locations):
-            current_id = str(loc["daily_pengepul_id"])
-            key = f"{previous_id}:{current_id}"
-            durasi_menit = distance_matrix.get(key, 0)
-            jarak_km = durasi_menit * 40 / 60 / 1000  # asumsi 40km/h
+        for i in range(len(ordered_locations)):
+            asal = {"latitude": DEPOT_LAT, "longitude": DEPOT_LON} if i == 0 else ordered_locations[i - 1]
+            tujuan = ordered_locations[i]
 
-            route = ClusterRoute(
+            dur, dist = ors_directions_request(
+                (asal["longitude"], asal["latitude"]),
+                (tujuan["longitude"], tujuan["latitude"])
+            )
+
+            red_light = calculate_red_light_time(dist or 0)
+            travel_time = (dist or 0) / SPEED + red_light if dist else 0
+
+            total_waktu = (travel_time + LOAD_UNLOAD_TIME) * 3600
+            total_waktu_list.append(int(total_waktu))
+            total_jarak_list.append(round(dist or 0, 2))
+
+        last_location = ordered_locations[-1]
+        dur_back, dist_back = ors_directions_request(
+            (last_location["longitude"], last_location["latitude"]),
+            (DEPOT_LON, DEPOT_LAT)
+        )
+
+        red_light_back = calculate_red_light_time(dist_back or 0)
+        travel_back_time = (dist_back or 0) / SPEED + red_light_back if dist_back else 0
+
+        total_waktu_list.append(int((travel_back_time + LOAD_UNLOAD_TIME) * 3600))
+        total_jarak_list.append(round(dist_back or 0, 2))
+
+        route_list = []
+
+        for idx, loc in enumerate(ordered_locations):
+            daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["daily_pengepul_id"]).first()
+            location_entry = db.query(Location).filter(Location.id == daily_pengepul_entry.location_id).first()
+
+            db.add(ClusterRoute(
                 cluster_id=cluster_pk,
                 vehicle_id=vehicle_id,
-                order_no=i + 1,
+                order_no=idx + 1,
                 daily_pengepul_id=loc["daily_pengepul_id"],
-                location_id=loc["location_id"],
+                location_id=daily_pengepul_entry.location_id,
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
+                waktu_tempuh=total_waktu_list[idx],
+                jarak_tempuh_km=total_jarak_list[idx],
                 nilai_ekspektasi_awal=loc["nilai_ekspektasi_awal"],
                 nilai_ekspektasi_akhir=loc["nilai_ekspektasi_akhir"],
                 nilai_diangkut=loc["nilai_diangkut"],
                 tanggal_cluster=tanggal,
-                is_optimized=optimize,
-                waktu_tempuh=f"{round(durasi_menit, 2)} menit",
-                jarak_tempuh_km=round(jarak_km, 2),
-            )
-            db.add(route)
+                is_optimized=optimize
+            ))
 
-            cluster_result["routes"].append({
-                "order_no": i + 1,
+            print(f"[DEBUG] INSERT route {idx+1} | is_optimized={optimize} | daily_pengepul_id={loc['daily_pengepul_id']}")
+
+            location_entry.sudah_diambil = True
+            total_nilai_angkut += loc["nilai_diangkut"]
+            rute.append(loc["nama_pengepul"])
+
+            route_list.append({
+                "order_no": idx + 1,
                 "daily_pengepul_id": loc["daily_pengepul_id"],
                 "nama_pengepul": loc["nama_pengepul"],
-                "nama_kendaraan": "Kendaraan Placeholder",  # Ganti sesuai logika kendaraan lo
-                "total_waktu": f"{int(durasi_menit // 60)}j {int(durasi_menit % 60)}m",
-                "jarak_km": round(jarak_km, 2),
+                "nama_kendaraan": vehicle.nama_kendaraan if vehicle else "",
+                "total_waktu": format_waktu(total_waktu_list[idx] / 3600),
+                "jarak_km": total_jarak_list[idx],
                 "nilai_awal": loc["nilai_ekspektasi_awal"],
                 "nilai_akhir": loc["nilai_ekspektasi_akhir"],
                 "nilai_diangkut": loc["nilai_diangkut"],
                 "alamat": loc["alamat"]
             })
 
-            rute_str.append(loc["nama_pengepul"])
-            total_jarak += jarak_km
-            total_waktu_menit += durasi_menit
-            total_nilai += loc["nilai_diangkut"]
+        rute.append("Depot")
+        hasil_routes.append({
+            "cluster_id": cluster_id,
+            "vehicle_id": vehicle_id,
+            "routes": route_list,
+            "rute": " -> ".join(rute),
+            "total_jarak_cluster_km": round(sum(total_jarak_list), 2),
+            "total_waktu_cluster": format_waktu(sum(total_waktu_list) / 3600),
+            "total_nilai_diangkut": total_nilai_angkut
+        })
 
-            previous_id = current_id
-
-        rute_str.append("Depot")
-        cluster_result["rute"] = " -> ".join(rute_str)
-        cluster_result["total_jarak_cluster_km"] = round(total_jarak, 2)
-        cluster_result["total_waktu_cluster"] = f"{int(total_waktu_menit // 60)}j {int(total_waktu_menit % 60)}m"
-        cluster_result["total_nilai_diangkut"] = round(total_nilai, 2)
-
-        hasil_routes.append(cluster_result)
-
-    db.commit()
+    try:
+        db.commit()
+        print("[DEBUG] DB Commit berhasil")
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] DB Commit error: {e}")
+        return standard_response(message=f"DB Commit Error: {e}", status_code=500)
 
     return standard_response(
-        message="Route berhasil di-generate",
+        message="Routes berhasil di-generate!",
         data={
             "tanggal": tanggal.isoformat(),
             "is_optimized": optimize,
@@ -573,8 +618,6 @@ def get_cluster_routes(
             "nama_pengepul": r.nama_pengepul,
             "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "",
             "nilai_ekspektasi_awal": r.nilai_ekspektasi_awal,
-            "nilai_ekspektasi_akhir": r.nilai_ekspektasi_akhir,
-            "nilai_diangkut": r.nilai_diangkut,
             "alamat": r.alamat
         })
 
