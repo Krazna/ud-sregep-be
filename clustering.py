@@ -389,7 +389,7 @@ def generate_routes(
                         "order_no": r.order_no,
                         "daily_pengepul_id": r.daily_pengepul_id,
                         "nama_pengepul": r.nama_pengepul,
-                        "nama_kendaraan": r.vehicle.nama if r.vehicle else "-",
+                        "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "-",
                         "total_waktu": f"{int(float(r.waktu_tempuh.replace(' menit', '')) // 60)}j {int(float(r.waktu_tempuh.replace(' menit', '')) % 60)}m",
                         "jarak_km": r.jarak_tempuh_km,
                         "nilai_awal": r.nilai_ekspektasi_awal,
