@@ -413,7 +413,7 @@ def generate_routes(
             "id": cl.daily_pengepul_id,
             "cluster_entry_id": cl.id,
             "daily_pengepul_id": cl.daily_pengepul_id,
-            "location_id": cl.location_id,
+            "location_id": cl.daily_pengepul.location_id if cl.daily_pengepul else None,
             "nama_pengepul": cl.nama_pengepul,
             "alamat": cl.alamat,
             "latitude": float(cl.latitude),
