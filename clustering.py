@@ -196,7 +196,7 @@ def cached_ors_request(origin: tuple, dest: tuple) -> float:
 def build_distance_matrix(locations: List[dict]) -> dict:
     """Build distance matrix using OSRM cached durations."""
     matrix = {}
-    depot = (float(os.getenv("DEPOT_LNG", "106.827153")), float(os.getenv("DEPOT_LAT", "-6.175392")))
+    depot = (float(os.getenv("DEPOT_LNG", "110.34369342557244")), float(os.getenv("DEPOT_LAT", "-7.735771367498664")))
 
     for loc1 in locations:
         id1 = str(loc1.get("daily_pengepul_id") or loc1.get("id"))
