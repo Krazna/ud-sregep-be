@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from models import DailyPengepul, Location
+from models import DailyPengepul, Location, ClusterRoute  # pastikan ClusterRoute ada di models
 from schemas import DailyPengepulCreate, DailyPengepulResponse
 from database import get_db
 from fastapi.responses import JSONResponse
@@ -41,8 +41,8 @@ def create_daily_pengepul(data: DailyPengepulCreate, db: Session = Depends(get_d
             nama_pengepul=location.nama_pengepul,
             alamat=location.alamat,
             nilai_ekspektasi=location.nilai_ekspektasi,
-            nilai_ekspektasi_awal=location.nilai_ekspektasi,   # ✅ nilai awal disalin
-            nilai_ekspektasi_akhir=location.nilai_ekspektasi,  # ✅ bisa berkurang pas proses cluster
+            nilai_ekspektasi_awal=location.nilai_ekspektasi,   # nilai awal disalin
+            nilai_ekspektasi_akhir=location.nilai_ekspektasi,  # bisa berkurang pas proses cluster
             latitude=location.latitude,
             longitude=location.longitude,
             sudut_polar=sudut 
@@ -81,12 +81,9 @@ def delete_daily_pengepul_by_date(
     if not entries:
         raise HTTPException(status_code=404, detail="Tidak ada data pengepul pada tanggal tersebut.")
 
-    # Hapus dulu relasi anak di tabel clusters
-    for entry in entries:
-        db.execute(
-            text("DELETE FROM clusters WHERE daily_pengepul_id = :id"),
-            {"id": entry.id}
-        )
+    # Hapus dulu relasi anak di tabel cluster_routes dengan cara bulk delete
+    daily_pengepul_ids = [entry.id for entry in entries]
+    db.query(ClusterRoute).filter(ClusterRoute.daily_pengepul_id.in_(daily_pengepul_ids)).delete(synchronize_session=False)
     db.commit()
 
     # Baru hapus parent
@@ -98,20 +95,31 @@ def delete_daily_pengepul_by_date(
 
 @router.delete("/daily-pengepul/{id}")
 def delete_daily_pengepul_by_id(id: int, db: Session = Depends(get_db)):
-    # Hapus dulu relasi anak di tabel clusters
-    db.execute(
-        text("DELETE FROM clusters WHERE daily_pengepul_id = :id"),
-        {"id": id}
-    )
-    db.commit()
-
-    # Lalu hapus parent
+    # Cek dulu apakah data ada
     entry = db.query(DailyPengepul).filter(DailyPengepul.id == id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Data pengepul tidak ditemukan.")
 
+    # Hapus dulu relasi anak di tabel cluster_routes
+    db.query(ClusterRoute).filter(ClusterRoute.daily_pengepul_id == id).delete(synchronize_session=False)
+    db.commit()
+
+    # Lalu hapus parent
     db.delete(entry)
     db.commit()
 
-    return JSONResponse(content={"message": "Data pengepul dan relasi clusters berhasil dihapus"})
+    return JSONResponse(content={"message": "Data pengepul dan relasi cluster_routes berhasil dihapus"})
 
+# Contoh fungsi update cluster_routes supaya gak set daily_pengepul_id ke None
+def update_cluster_route_daily_pengepul_id(db: Session, cluster_route_id: int, daily_pengepul_id: int):
+    if daily_pengepul_id is None:
+        raise HTTPException(status_code=400, detail="daily_pengepul_id tidak boleh kosong")
+
+    cluster_route = db.query(ClusterRoute).filter(ClusterRoute.id == cluster_route_id).first()
+    if not cluster_route:
+        raise HTTPException(status_code=404, detail="Cluster route tidak ditemukan")
+
+    cluster_route.daily_pengepul_id = daily_pengepul_id
+    db.commit()
+    db.refresh(cluster_route)
+    return cluster_route

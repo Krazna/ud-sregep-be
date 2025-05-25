@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Form
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Vehicle
+from models import Cluster, ClusterRoute, Vehicle
 from schemas import VehicleCreate, VehicleResponse
 from auth import get_current_user
 from fastapi.responses import JSONResponse
@@ -28,6 +28,21 @@ def get_vehicles(
     response_data = [VehicleResponse.from_orm(v).model_dump() for v in vehicles]
     return standard_response(data=response_data, message="Berhasil mengambil semua kendaraan")
 
+@vehicle_router.get("/{vehicle_id}")
+def get_vehicle_by_id(
+    vehicle_id: int,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db_vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+    if db_vehicle is None:
+        raise HTTPException(status_code=404, detail="Kendaraan tidak ditemukan")
+
+    return standard_response(
+        data=VehicleResponse.from_orm(db_vehicle).model_dump(),
+        message="Berhasil mengambil detail kendaraan"
+    )
+    
 # Tambah kendaraan baru
 @vehicle_router.post("/")
 def create_vehicle(
@@ -48,8 +63,8 @@ def create_vehicle(
     )
 
 # Ambil kendaraan berdasarkan ID
-@vehicle_router.get("/{vehicle_id}")
-def get_vehicle(
+@vehicle_router.delete("/{vehicle_id}")
+def delete_vehicle(
     vehicle_id: int,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -57,10 +72,21 @@ def get_vehicle(
     db_vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if db_vehicle is None:
         raise HTTPException(status_code=404, detail="Kendaraan tidak ditemukan")
-    return standard_response(
-        data=VehicleResponse.from_orm(db_vehicle).model_dump(),
-        message="Berhasil mengambil detail kendaraan"
-    )
+
+    # 🔍 Cek relasi dengan clusters dan cluster_routes
+    used_in_clusters = db.query(Cluster).filter(Cluster.vehicle_id == vehicle_id).count()
+    used_in_routes = db.query(ClusterRoute).filter(ClusterRoute.vehicle_id == vehicle_id).count()
+
+    if used_in_clusters > 0 or used_in_routes > 0:
+        return standard_response(
+            data=None,
+            message=f"Kendaraan tidak bisa dihapus karena masih digunakan dalam {used_in_clusters} cluster dan {used_in_routes} route.",
+            status_code=400
+        )
+
+    db.delete(db_vehicle)
+    db.commit()
+    return standard_response(data=None, message="Kendaraan berhasil dihapus")
 
 # Perbarui data kendaraan
 @vehicle_router.put("/{vehicle_id}")

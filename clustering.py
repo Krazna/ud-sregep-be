@@ -39,6 +39,15 @@ MAX_CLUSTER_PER_DAY = 3
 
 MAX_CLUSTER_PER_DAY = 3
 
+def add_workdays(start_date, workdays):
+    days_added = 0
+    current = start_date
+    while days_added < workdays:
+        current += timedelta(days=1)
+        if current.weekday() != 6:  # Bukan Minggu
+            days_added += 1
+    return current
+
 def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db: Session):
     hasil_cluster = []
     remaining_locations = sorted(locations[:], key=lambda l: l.sudut_polar, reverse=True)
@@ -47,14 +56,24 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
         return hasil_cluster, []
 
     current_date = remaining_locations[0].tanggal_cluster
+    max_end_date = add_workdays(current_date, 4)
+    last_remaining = {}
 
     while any(loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" for loc in remaining_locations):
-        while current_date.weekday() == 6:  # Skip Minggu
+        if current_date > max_end_date:
+            print(f"⏹️ Maksimal 5 hari tercapai, stop di tanggal: {current_date}")
+            break
+
+        if current_date.weekday() == 6:  # skip Minggu
             current_date += timedelta(days=1)
+            continue
 
         print(f"\n📆 Mulai clustering tanggal: {current_date}")
+        print(f"📍 Total lokasi sisa: {len(remaining_locations)}")
+
         cluster_hari_ini = 0
         cluster_id_harian = 1
+        used_ids_today = set()
 
         while cluster_hari_ini < MAX_CLUSTER_PER_DAY:
             any_vehicle_used = False
@@ -67,7 +86,13 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                 used_locations = []
 
                 sorted_locations = sorted(
-                    [loc for loc in remaining_locations if loc.nilai_ekspektasi_akhir > 0 and loc.status != "Sudah di-cluster" and loc.tanggal_cluster <= current_date],
+                    [
+                        loc for loc in remaining_locations
+                        if loc.nilai_ekspektasi_akhir > 0 and
+                        loc.status != "Sudah di-cluster" and
+                        loc.tanggal_cluster <= current_date and
+                        loc.id not in used_ids_today
+                    ],
                     key=lambda l: l.sudut_polar,
                     reverse=True
                 )
@@ -76,45 +101,56 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                     continue
 
                 for loc in sorted_locations:
-                    if total_load >= kapasitas:
-                        break
+                    nilai_awal = last_remaining.get(loc.id)
+                    if nilai_awal is None:
+                        nilai_awal = loc.nilai_ekspektasi_awal or loc.nilai_ekspektasi  # Handle null
 
-                    if prev_loc is None:
-                        dur, dist = ors_directions_request((DEPOT_LON, DEPOT_LAT), (loc.longitude, loc.latitude))
-                    else:
-                        dur, dist = ors_directions_request((prev_loc.longitude, prev_loc.latitude), (loc.longitude, loc.latitude))
+                    if nilai_awal < 25:
+                        continue  # Skip lokasi dengan sisa muatan < 25kg
 
+                    start_coord = (prev_loc.longitude, prev_loc.latitude) if prev_loc else (DEPOT_LON, DEPOT_LAT)
+                    end_coord = (loc.longitude, loc.latitude)
+                    dur, dist = ors_directions_request(start_coord, end_coord)
                     if dur is None or dist is None:
                         continue
 
                     red_light = calculate_red_light_time(dist)
                     travel_time = dist / SPEED + red_light
-                    waktu_di_lokasi = travel_time + LOAD_UNLOAD_TIME
 
-                    dur_back, dist_back = ors_directions_request((loc.longitude, loc.latitude), (DEPOT_LON, DEPOT_LAT))
+                    muatan_bisa_diangkut = min(kapasitas - total_load, nilai_awal)
+                    if muatan_bisa_diangkut <= 0:
+                        continue
+
+                    waktu_unload = ((muatan_bisa_diangkut / 20.0) * 4.26) / 60
+                    waktu_di_lokasi = travel_time + waktu_unload
+
+                    dur_back, dist_back = ors_directions_request(end_coord, (DEPOT_LON, DEPOT_LAT))
                     if dur_back is None or dist_back is None:
                         continue
 
                     travel_back_time = dist_back / SPEED + calculate_red_light_time(dist_back)
                     simulasi_total_time = total_time + waktu_di_lokasi + travel_back_time
 
-                    muatan_bisa_diangkut = min(kapasitas - total_load, loc.nilai_ekspektasi_akhir)
+                    nilai_akhir = nilai_awal - muatan_bisa_diangkut
 
-                    if simulasi_total_time <= MAX_HOURS and muatan_bisa_diangkut > 0:
-                        nilai_awal = loc.nilai_ekspektasi_akhir
-                        loc.nilai_ekspektasi_akhir -= muatan_bisa_diangkut
+                    if simulasi_total_time <= MAX_HOURS:
+                        last_remaining[loc.id] = nilai_akhir
+
+                        loc.nilai_ekspektasi_awal = nilai_awal
+                        loc.nilai_diangkut = muatan_bisa_diangkut
+                        loc.nilai_ekspektasi_akhir = nilai_akhir
                         loc.tanggal_cluster = current_date
-                        loc.status = "Sudah di-cluster" if loc.nilai_ekspektasi_akhir == 0 else "Belum di-cluster"
+                        loc.status = "Sudah di-cluster" if nilai_akhir == 0 else "Belum di-cluster"
                         db.add(loc)
 
                         current_cluster.append({
                             "id": loc.id,
                             "nama_pengepul": loc.nama_pengepul,
                             "alamat": loc.alamat,
-                            "nilai_ekspektasi": float(muatan_bisa_diangkut),
+                            "nilai_ekspektasi": float(loc.nilai_ekspektasi),
                             "nilai_ekspektasi_awal": float(nilai_awal),
-                            "nilai_ekspektasi_akhir": float(loc.nilai_ekspektasi_akhir),
                             "nilai_diangkut": float(muatan_bisa_diangkut),
+                            "nilai_ekspektasi_akhir": float(nilai_akhir),
                             "status": loc.status,
                             "latitude": float(loc.latitude),
                             "longitude": float(loc.longitude),
@@ -135,13 +171,15 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                     total_distance += dist_back_last
 
                     for idx, loc in enumerate(used_locations):
-                        existing_cluster = db.query(Cluster).filter_by(
+                        if (loc.id, cluster_id_harian, current_date) in used_ids_today:
+                            continue
+
+                        existing = db.query(Cluster).filter_by(
                             daily_pengepul_id=loc.id,
                             tanggal_cluster=current_date,
                             cluster_id=cluster_id_harian
                         ).first()
-
-                        if existing_cluster:
+                        if existing:
                             continue
 
                         cluster = Cluster(
@@ -150,16 +188,17 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                             vehicle_id=vehicle.id,
                             nama_pengepul=loc.nama_pengepul,
                             alamat=loc.alamat,
-                            nilai_ekspektasi=loc.nilai_ekspektasi_awal,
+                            nilai_ekspektasi=loc.nilai_ekspektasi,
                             nilai_ekspektasi_awal=loc.nilai_ekspektasi_awal,
                             nilai_ekspektasi_akhir=loc.nilai_ekspektasi_akhir,
                             latitude=loc.latitude,
                             longitude=loc.longitude,
-                            nilai_diangkut=loc.nilai_ekspektasi_awal - loc.nilai_ekspektasi_akhir,
+                            nilai_diangkut=loc.nilai_diangkut,
                             tanggal_cluster=current_date,
                             sequence=idx
                         )
                         db.add(cluster)
+                        used_ids_today.add((loc.id, cluster_id_harian, current_date))
 
                     hasil_cluster.append({
                         "cluster_id": cluster_id_harian,
@@ -175,27 +214,26 @@ def sweep_algorithm(locations: List[DailyPengepul], vehicles: List[Vehicle], db:
                         any_vehicle_used = True
                         cluster_hari_ini += 1
                         cluster_id_harian += 1
-                        print(f"✅ Cluster {cluster_id_harian - 1} selesai dengan {len(current_cluster)} lokasi")
-                        if cluster_hari_ini >= MAX_CLUSTER_PER_DAY:
-                            print(f"⚠️ Max cluster per hari tercapai ({MAX_CLUSTER_PER_DAY})")
-                            break
                     except Exception as e:
                         db.rollback()
-                        print(f"❌ Gagal commit cluster_id {cluster_id_harian}: {str(e)}")
                         raise
 
             if not any_vehicle_used:
-                print("⚠️ Tidak ada kendaraan yang bisa digunakan hari ini.")
                 break
 
-        # Update tanggal cluster pengepul yang belum selesai
         for loc in remaining_locations:
             if loc.nilai_ekspektasi_akhir > 0 and loc.tanggal_cluster <= current_date and loc.status != "Sudah di-cluster":
-                loc.tanggal_cluster = current_date + timedelta(days=1)
+                new_date = current_date + timedelta(days=1)
+                while new_date.weekday() == 6:
+                    new_date += timedelta(days=1)
+                loc.tanggal_cluster = new_date
                 db.add(loc)
         db.commit()
 
-        current_date += timedelta(days=1)
+        next_date = current_date + timedelta(days=1)
+        while next_date.weekday() == 6:
+            next_date += timedelta(days=1)
+        current_date = next_date
 
     return hasil_cluster, []
 
@@ -293,6 +331,9 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
         flat_data = []
         for cluster in clusters_existing:
             loc = cluster.daily_pengepul
+            nilai_diangkut = float(cluster.nilai_diangkut or 0.0)
+            # Hitung waktu unload ulang (jika perlu ditampilkan)
+            waktu_unload = ((nilai_diangkut / 20.0) * 4.26) / 60
             flat_data.append({
                 "id": loc.id,
                 "nama_pengepul": loc.nama_pengepul,
@@ -300,12 +341,14 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
                 "nilai_ekspektasi": float(loc.nilai_ekspektasi or 0.0),
                 "nilai_ekspektasi_awal": float(loc.nilai_ekspektasi_awal or 0.0),
                 "nilai_ekspektasi_akhir": float(loc.nilai_ekspektasi_akhir or 0.0),
-                "nilai_diangkut": float(cluster.nilai_diangkut or 0.0),
+                "nilai_diangkut": nilai_diangkut,
                 "status": "Sudah di-cluster" if (loc.nilai_ekspektasi_akhir or 0.0) == 0 else "Belum di-cluster",
                 "latitude": float(loc.latitude),
                 "longitude": float(loc.longitude),
                 "cluster_id": cluster.cluster_id,
-                "nama_kendaraan": cluster.vehicle.nama_kendaraan if cluster.vehicle else None
+                "nama_kendaraan": cluster.vehicle.nama_kendaraan if cluster.vehicle else None,
+                "waktu_unload": format_waktu(waktu_unload),
+                "total_waktu_lokasi": None  # Tidak bisa dihitung akurat dari data lama
             })
         return standard_response(
             message=f"{len(flat_data)} data hasil clustering ditemukan.",
@@ -332,16 +375,27 @@ def sweep_clustering(tanggal: date = Query(...), db: Session = Depends(get_db)):
     flat_data = []
     for cluster in hasil_cluster:
         for idx, loc in enumerate(cluster["locations"]):
+            nilai_diangkut = float(loc.get("nilai_diangkut", 0.0))
+            waktu_unload = ((nilai_diangkut / 20.0) * 4.26) / 60
+            travel_time = None
+            try:
+                travel_time = float(loc.get("jarak_tempuh_km", 0.0)) / SPEED + calculate_red_light_time(float(loc.get("jarak_tempuh_km", 0.0)))
+            except:
+                pass
+            total_waktu_lokasi = travel_time + waktu_unload if travel_time is not None else None
+
             flat_data.append({
                 **loc,
                 "nilai_ekspektasi": float(loc.get("nilai_ekspektasi", 0.0)),
                 "nilai_ekspektasi_awal": float(loc.get("nilai_ekspektasi_awal", loc.get("nilai_ekspektasi", 0.0))),
                 "nilai_ekspektasi_akhir": float(loc.get("nilai_ekspektasi_akhir", 0.0)),
-                "nilai_diangkut": float(loc.get("nilai_diangkut", 0.0)),
+                "nilai_diangkut": nilai_diangkut,
                 "status": "Sudah di-cluster" if float(loc.get("nilai_ekspektasi_akhir", 0.0)) == 0 else "Belum di-cluster",
                 "cluster_id": cluster["cluster_id"],
                 "nama_kendaraan": cluster["nama_kendaraan"],
-                "sequence": idx
+                "sequence": idx,
+                "waktu_unload": format_waktu(waktu_unload),
+                "total_waktu_lokasi": format_waktu(total_waktu_lokasi) if total_waktu_lokasi is not None else None
             })
 
     return standard_response(
@@ -505,7 +559,10 @@ def generate_routes(
             red_light = calculate_red_light_time(dist or 0)
             travel_time = (dist or 0) / SPEED + red_light if dist else 0
 
-            total_waktu = (travel_time + LOAD_UNLOAD_TIME) * 3600
+            nilai_diangkut = ordered_locations[i]["nilai_diangkut"]
+            unload_time = (nilai_diangkut / 20) * 4.26 * 60  # dalam detik
+            total_waktu = travel_time * 3600 + unload_time
+
             total_waktu_list.append(int(total_waktu))
             total_jarak_list.append(round(dist or 0, 2))
 
