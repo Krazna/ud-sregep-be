@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Location
+from models import Cluster, ClusterRoute, DailyPengepul, Location
 from schemas import LocationCreate, LocationResponse
 from auth import get_current_user
 from fastapi.responses import JSONResponse
@@ -139,13 +139,26 @@ def delete_location(location_id: int, db: Session = Depends(get_db), user=Depend
         if not location:
             raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan")
 
+        # Cari daily_pengepul yang terkait sama location_id
+        daily_pengepuls = db.query(DailyPengepul).filter(DailyPengepul.location_id == location_id).all()
+
+        # Hapus dulu cluster_route yang pakai location_id
+        db.query(ClusterRoute).filter(ClusterRoute.location_id == location_id).delete(synchronize_session=False)
+
+        # Hapus dulu cluster yang terkait daily_pengepul
+        for dp in daily_pengepuls:
+            db.query(Cluster).filter(Cluster.daily_pengepul_id == dp.id).delete(synchronize_session=False)
+
+        # Hapus daily_pengepul yang terkait location_id
+        db.query(DailyPengepul).filter(DailyPengepul.location_id == location_id).delete(synchronize_session=False)
+
+        # Baru hapus location
         db.delete(location)
         db.commit()
 
-        return standard_response(data=None, message="Lokasi berhasil dihapus")
-    except HTTPException as e:
-        raise e
+        return standard_response(data=None, message="Lokasi & semua relasi berhasil dihapus")
     except Exception as e:
+        db.rollback()
         return standard_response(
             data=None,
             message="Terjadi kesalahan saat menghapus lokasi",

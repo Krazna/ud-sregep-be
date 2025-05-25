@@ -120,9 +120,30 @@ def delete_vehicle(
     if db_vehicle is None:
         raise HTTPException(status_code=404, detail="Kendaraan tidak ditemukan")
 
-    db.delete(db_vehicle)
-    db.commit()
-    return standard_response(data=None, message="Kendaraan berhasil dihapus")
+    try:
+        # Cari semua cluster yang pakai kendaraan ini
+        clusters = db.query(Cluster).filter(Cluster.vehicle_id == vehicle_id).all()
+        
+        # Hapus cluster_route yang terkait kendaraan ini
+        db.query(ClusterRoute).filter(ClusterRoute.vehicle_id == vehicle_id).delete(synchronize_session=False)
+        
+        # Hapus cluster yang terkait kendaraan ini
+        for cluster in clusters:
+            db.delete(cluster)
+        
+        # Baru hapus kendaraan
+        db.delete(db_vehicle)
+        db.commit()
+
+        return standard_response(data=None, message="Kendaraan dan semua relasinya berhasil dihapus")
+    except Exception as e:
+        db.rollback()
+        return standard_response(
+            data=None,
+            message="Terjadi kesalahan saat menghapus kendaraan",
+            status_code=500,
+            error=str(e)
+        )
 
 # --- SCHEMAS ---
 

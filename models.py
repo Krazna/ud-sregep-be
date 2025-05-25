@@ -60,7 +60,8 @@ class Location(Base):
     @property
     def status_diambil(self):
         return "sudah diambil" if self.sudah_diambil else "belum diambil"
-    
+
+
 class Vehicle(Base):
     __tablename__ = "vehicles"
 
@@ -70,6 +71,7 @@ class Vehicle(Base):
 
     clusters = relationship("Cluster", back_populates="vehicle")
     cluster_routes = relationship("ClusterRoute", back_populates="vehicle")
+
 
 class Cluster(Base):
     __tablename__ = "clusters"
@@ -90,20 +92,19 @@ class Cluster(Base):
 
     nilai_ekspektasi_awal = Column(Float, nullable=True)
     nilai_ekspektasi_akhir = Column(Float, nullable=True)
-    nilai_diangkut = Column(Float, nullable=True)  # ✅ Sudah dimasukkan
+    nilai_diangkut = Column(Float, nullable=True)
 
-    # Relationship
-    daily_pengepul = relationship("DailyPengepul", back_populates="clusters")
-    vehicle = relationship("Vehicle", back_populates="clusters")
-    
     sequence = Column(Integer, nullable=True)
 
-    # Cascade relationship ke ClusterRoute
+    daily_pengepul = relationship("DailyPengepul", back_populates="clusters")
+    vehicle = relationship("Vehicle", back_populates="clusters")
+
     cluster_routes = relationship(
         "ClusterRoute",
         back_populates="cluster",
         cascade="all, delete-orphan"
     )
+
 
 class ClusterRoute(Base):
     __tablename__ = "cluster_routes"
@@ -116,8 +117,8 @@ class ClusterRoute(Base):
 
     daily_pengepul_id = Column(Integer, ForeignKey("daily_pengepul.id"), nullable=False)
 
-    # 🆕 Tambahan location_id langsung dari daily_pengepul
-    location_id = Column(Integer, ForeignKey("locations.id", ondelete="RESTRICT"), nullable=True)
+    # 🔥 UPDATED: Cascade delete kalau lokasi dihapus
+    location_id = Column(Integer, ForeignKey("locations.id", ondelete="CASCADE"), nullable=True)
 
     nama_pengepul = Column(String(255), nullable=True)
     alamat = Column(String(255), nullable=True)
@@ -130,37 +131,39 @@ class ClusterRoute(Base):
     nilai_diangkut = Column(Float, nullable=True)
 
     tanggal_cluster = Column(Date, default=date.today, nullable=False)
-    
     is_optimized = Column(Boolean, default=False)
 
-    # Relationships
     cluster = relationship("Cluster", back_populates="cluster_routes")
     vehicle = relationship("Vehicle", back_populates="cluster_routes")
     daily_pengepul = relationship("DailyPengepul", back_populates="cluster_routes")
-    location = relationship("Location")  # Opsional kalau lo pengen akses .location langsung dari cluster_route
+
+    location = relationship("Location", passive_deletes=True)
+
 
 class DailyPengepul(Base):
     __tablename__ = "daily_pengepul"
 
     id = Column(Integer, primary_key=True, index=True)
     tanggal_cluster = Column(Date, index=True)
-    location_id = Column(Integer, ForeignKey("locations.id", ondelete="RESTRICT"))  # ✅ prevent auto-delete
+
+    # 🔥 UPDATED: Cascade delete kalau lokasi dihapus
+    location_id = Column(Integer, ForeignKey("locations.id", ondelete="CASCADE"))
+
     nama_pengepul = Column(String(255))
     alamat = Column(String(255))
-    nilai_ekspektasi = Column(Float, nullable=True)  # legacy, bisa dihapus kalau udah gak kepake
+    nilai_ekspektasi = Column(Float, nullable=True)
     nilai_ekspektasi_awal = Column(Float, nullable=True)
     nilai_ekspektasi_akhir = Column(Float, nullable=True)
     latitude = Column(Numeric(18, 15), nullable=True)
     longitude = Column(Numeric(18, 15), nullable=True)
     sudut_polar = Column(Float, nullable=True)
 
-    # ✅ Kolom baru buat tracking status clustering
     status = Column(String(50), default="Belum di-cluster")
 
     location = relationship("Location", passive_deletes=True)
     clusters = relationship("Cluster", back_populates="daily_pengepul")
     cluster_routes = relationship("ClusterRoute", back_populates="daily_pengepul")
- 
+    
 class DistanceMatrix(Base):
     __tablename__ = "distance_matrices"
 
