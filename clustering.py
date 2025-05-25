@@ -536,7 +536,7 @@ def generate_routes(
                 print(f"[ERROR] nearest_neighbor error for cluster {cluster_id}: {e}")
                 continue
         else:
-            print("[DEBUG] Sorting with polar angle only (optimize=False)")
+            print("[DEBUG] Sorting dengan sudut polar (optimize=False)")
             ordered_locations = sorted(lokasi_list, key=lambda x: x["sudut_polar"], reverse=True)
 
         if not ordered_locations:
@@ -546,6 +546,7 @@ def generate_routes(
         total_jarak_list = []
         total_nilai_angkut = 0.0
         rute = ["Depot"]
+        route_list = []
 
         for i in range(len(ordered_locations)):
             asal = {"latitude": DEPOT_LAT, "longitude": DEPOT_LON} if i == 0 else ordered_locations[i - 1]
@@ -559,8 +560,8 @@ def generate_routes(
             red_light = calculate_red_light_time(dist or 0)
             travel_time = (dist or 0) / SPEED + red_light if dist else 0
 
-            nilai_diangkut = ordered_locations[i]["nilai_diangkut"]
-            unload_time = (nilai_diangkut / 20) * 4.26 * 60  # dalam detik
+            nilai_diangkut = tujuan["nilai_diangkut"]
+            unload_time = (nilai_diangkut / 20) * 4.26 * 60  # detik
             total_waktu = travel_time * 3600 + unload_time
 
             total_waktu_list.append(int(total_waktu))
@@ -578,18 +579,24 @@ def generate_routes(
         total_waktu_list.append(int((travel_back_time + LOAD_UNLOAD_TIME) * 3600))
         total_jarak_list.append(round(dist_back or 0, 2))
 
-        route_list = []
-
         for idx, loc in enumerate(ordered_locations):
             daily_pengepul_entry = db.query(DailyPengepul).filter(DailyPengepul.id == loc["daily_pengepul_id"]).first()
+            if not daily_pengepul_entry:
+                print(f"[WARNING] DailyPengepul ID={loc['daily_pengepul_id']} not found, skip.")
+                continue
+
             location_entry = db.query(Location).filter(Location.id == daily_pengepul_entry.location_id).first()
+            if not location_entry:
+                print(f"[WARNING] Location ID={daily_pengepul_entry.location_id} not found, skip update.")
+            else:
+                location_entry.sudah_diambil = True
 
             db.add(ClusterRoute(
                 cluster_id=cluster_pk,
                 vehicle_id=vehicle_id,
                 order_no=idx + 1,
                 daily_pengepul_id=loc["daily_pengepul_id"],
-                location_id=daily_pengepul_entry.location_id,
+                location_id=daily_pengepul_entry.location_id if daily_pengepul_entry else None,
                 nama_pengepul=loc["nama_pengepul"],
                 alamat=loc["alamat"],
                 waktu_tempuh=total_waktu_list[idx],
@@ -603,7 +610,6 @@ def generate_routes(
 
             print(f"[DEBUG] INSERT route {idx+1} | is_optimized={optimize} | daily_pengepul_id={loc['daily_pengepul_id']}")
 
-            location_entry.sudah_diambil = True
             total_nilai_angkut += loc["nilai_diangkut"]
             rute.append(loc["nama_pengepul"])
 
