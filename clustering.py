@@ -688,7 +688,7 @@ def get_cluster_routes(
     for r in query.all():
         data.append({
             "cluster_id": r.cluster_id,
-            "tanggal_cluster": r.tanggal_cluster.strftime("%Y-%m-%d"),  # serialize date ke string
+            "tanggal_cluster": r.tanggal_cluster.strftime("%Y-%m-%d"),
             "nama_pengepul": r.nama_pengepul,
             "nama_kendaraan": r.vehicle.nama_kendaraan if r.vehicle else "",
             "nilai_ekspektasi_awal": r.nilai_ekspektasi_awal,
